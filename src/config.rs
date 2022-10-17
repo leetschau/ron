@@ -6,7 +6,7 @@ use directories::{BaseDirs, ProjectDirs};
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
     app_home: PathBuf,
-    default_notebook: String,
+    pub default_notebook: String,
     pub editor: String,
     pub viewer: String,
 }
