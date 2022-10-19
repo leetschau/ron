@@ -131,11 +131,28 @@ pub fn run(args: ArgMatches) {
         },
         Some(("delete", args)) => {
             let idx = args.get_one::<u16>("index").unwrap();
-            println!("delete note: #{}", idx)
+            let cache = fs::read(confs.app_home.join(CACHE_FILE))
+                .expect("Unable to read cache file, run `l` or `s` command to fix this.");
+            let notes_dict: BTreeMap<u16, Note> = serde_pickle::from_slice(
+                &cache, Default::default()).unwrap();
+            let target_path = &notes_dict[idx].filepath;
+            fs::remove_file(target_path).unwrap();
+            println!("Note #{} deleted", idx)
         },
         Some(("edit", args)) => {
             let idx = args.get_one::<u16>("index").unwrap();
-            println!("edit note: #{}", idx)
+            let cache = fs::read(confs.app_home.join(CACHE_FILE))
+                .expect("Unable to read cache file, run `l` or `s` command to fix this.");
+            let notes_dict: BTreeMap<u16, Note> = serde_pickle::from_slice(
+                &cache, Default::default()).unwrap();
+            let target_path = &notes_dict[idx].filepath;
+            // let note = parse_note(*target_path);
+            SysCmd::new(confs.editor)
+                .arg(target_path)
+                .spawn()
+                .expect("nvim met an error")
+                .wait()
+                .expect("Error: Editor returned a non-zero status");
         },
         Some(("list", args)) => {
             let num = args.get_one::<u16>("number").unwrap();
