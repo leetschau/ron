@@ -29,7 +29,7 @@ impl fmt::Display for Note {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let updated = self.updated.format("%Y-%m-%d");
         let created = self.created.format("%Y-%m-%d");
-        let tagstr = self.tags.join("; ");
+        let tagstr: String = self.tags.join("; ");
         write!(f, "{} {}: {} {} [{}]",
                updated,
                self.notebook,
@@ -40,40 +40,45 @@ impl fmt::Display for Note {
 }
 
 fn parse_note(inp: PathBuf) -> Note {
-    let raw = fs::read_to_string(&inp).expect("Reading file failed");
+    let raw: String = fs::read_to_string(&inp).expect("Reading file failed");
     let mut lines = raw.lines();
 
-    let titleline = String::from(lines.next().unwrap());
-    let title = String::from(&titleline[7..]);
+    let titleline: String = String::from(lines.next().unwrap());
+    let title: String = String::from(&titleline[7..]);
 
-    let tagline = String::from(lines.next().unwrap());
-    let tagstr =&tagline[6..];
-    let tags = tagstr.split("; ").map(str::to_string).collect();
+    let tagline: String = String::from(lines.next().unwrap());
+    let tagstr: &str =&tagline[6..];
+    let tags: Vec<String> = tagstr.split("; ").map(str::to_string).collect();
 
-    let nbline = String::from(lines.next().unwrap());
-    let notebook = String::from(&nbline[10..]);
+    let nbline: String = String::from(lines.next().unwrap());
+    let notebook: String = String::from(&nbline[10..]);
 
-    let crline = String::from(lines.next().unwrap());
-    let crstr = &crline[9..];
-    let created = NaiveDateTime::parse_from_str(
+    let crline: String = String::from(lines.next().unwrap());
+    let crstr: &str = &crline[9..];
+    let created: NaiveDateTime = NaiveDateTime::parse_from_str(
         crstr, "%Y-%m-%d %H:%M:%S").unwrap();
 
-    let upline = String::from(lines.next().unwrap());
-    let upstr = &upline[9..];
-    let updated = NaiveDateTime::parse_from_str(
+    let upline: String = String::from(lines.next().unwrap());
+    let upstr: &str = &upline[9..];
+    let updated: NaiveDateTime = NaiveDateTime::parse_from_str(
         upstr, "%Y-%m-%d %H:%M:%S").unwrap();
 
-    let body = lines.skip(3).collect::<Vec<&str>>().join("\n");
+    let body: String = lines.skip(3).collect::<Vec<&str>>().join("\n");
 
     Note { title, tags, notebook, created, updated, body, filepath: inp}
 }
 
 /// Save a note to file specified by 'path' in text format
 fn save_note(note: Note, path: &PathBuf) {
-    let tagstr = note.tags.join("; ");
-    let content = format!(
-        "Title: {}\nTags: {}\nNotebook: {}\nCreated: {}\nUpdated: {}\n------\n{}",
-        note.title, tagstr, note.notebook, note.created, note.updated, note.body);
+    let tagstr: String = note.tags.join("; ");
+    let content: String = format!(
+        "Title: {}\nTags: {}\nNotebook: {}\nCreated: {}\nUpdated: {}\n\n------\n\n{}",
+        note.title,
+        tagstr,
+        note.notebook,
+        note.created.format("%F %T"),
+        note.updated.format("%F %T"),
+        note.body);
     fs::write(path, content)
         .unwrap_or_else(|_| panic!("Writing note file {} failed", path.display()));
 }
@@ -81,7 +86,7 @@ fn save_note(note: Note, path: &PathBuf) {
 /// Load all markdown file from the 'repo_path', sort with updated time, and take first num elements
 fn most_recent_notes(repo_path: &PathBuf, num: u16) -> Vec<Note> {
     let files = glob(repo_path.join("*.md").to_str().unwrap()).unwrap();
-    let mut notes = Vec::new();
+    let mut notes: Vec<Note> = Vec::new();
     for item in files {
         match item {
             Ok(path) => { let note = parse_note(path); notes.push(note) },
@@ -111,7 +116,7 @@ fn save_display(notes: Vec<Note>, conf: Config) {
 }
 
 pub fn run(args: ArgMatches) {
-    let confs = load_configs();
+    let confs: Config = load_configs();
     match args.subcommand() {
         Some(("add", _)) => {
             let now = Local::now().format("%F %T");
@@ -130,23 +135,28 @@ pub fn run(args: ArgMatches) {
             save_note(new_note, &confs.app_home.join(note_rel_path));
         },
         Some(("delete", args)) => {
-            let idx = args.get_one::<u16>("index").unwrap();
-            let cache = fs::read(confs.app_home.join(CACHE_FILE))
+            let idx: &u16 = args.get_one::<u16>("index").unwrap();
+            let cache: Vec<u8> = fs::read(confs.app_home.join(CACHE_FILE))
                 .expect("Unable to read cache file, run `l` or `s` command to fix this.");
             let notes_dict: BTreeMap<u16, Note> = serde_pickle::from_slice(
                 &cache, Default::default()).unwrap();
-            let target_path = &notes_dict[idx].filepath;
+            let target_path: &PathBuf = &notes_dict[idx].filepath;
             fs::remove_file(target_path).unwrap();
             println!("Note #{} deleted", idx)
         },
         Some(("edit", args)) => {
-            let idx = args.get_one::<u16>("index").unwrap();
-            let cache = fs::read(confs.app_home.join(CACHE_FILE))
+            let idx: &u16 = args.get_one::<u16>("index").unwrap();
+            let cache: Vec<u8> = fs::read(confs.app_home.join(CACHE_FILE))
                 .expect("Unable to read cache file, run `l` or `s` command to fix this.");
             let notes_dict: BTreeMap<u16, Note> = serde_pickle::from_slice(
                 &cache, Default::default()).unwrap();
-            let target_path = &notes_dict[idx].filepath;
-            // let note = parse_note(*target_path);
+            let target_path: &str = &notes_dict[idx].filepath.to_str().unwrap();
+            let old_note: Note = parse_note(PathBuf::from(target_path));
+            let new_note = Note {
+                updated: Local::now().naive_local(),
+                ..old_note
+            };
+            save_note(new_note, &PathBuf::from(target_path));
             SysCmd::new(confs.editor)
                 .arg(target_path)
                 .spawn()
@@ -155,9 +165,9 @@ pub fn run(args: ArgMatches) {
                 .expect("Error: Editor returned a non-zero status");
         },
         Some(("list", args)) => {
-            let num = args.get_one::<u16>("number").unwrap();
-            let confs = load_configs();
-            let notes = most_recent_notes(
+            let num: &u16 = args.get_one::<u16>("number").unwrap();
+            let confs: Config = load_configs();
+            let notes: Vec<Note> = most_recent_notes(
                 &confs.app_home.join("repo"),
                 *num);
             save_display(notes, confs)
