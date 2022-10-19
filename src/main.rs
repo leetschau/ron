@@ -40,7 +40,7 @@ fn parse_args() -> ArgMatches {
                 .arg(
                     Arg::new("number")
                         .help("number of notes to be listed.")
-                        .value_parser(clap::value_parser!(u8))
+                        .value_parser(clap::value_parser!(u16))
                         .default_value("5"),
                 ),
         )
