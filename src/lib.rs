@@ -39,6 +39,76 @@ impl fmt::Display for Note {
      }
 }
 
+impl Note {
+    fn matches(&self, pattern: &str, key: &str, ignore_case: bool, match_whole_word: bool, before: bool) -> bool {
+        match key {
+            "ti" => {
+                let mut target = self.title.clone();
+                if ignore_case {
+                    target = target.to_lowercase();
+                }
+                if match_whole_word {
+                    let targets: Vec<&str> = target.split_whitespace().collect();
+                    targets.contains(&pattern)
+                } else {
+                    target.contains(pattern)
+                }
+            },
+            "ta" => {
+                let mut tagstr: String = self.tags.join("; ");
+                if ignore_case {
+                    tagstr = tagstr.to_lowercase();
+                }
+                if match_whole_word {
+                    let targets: Vec<&str> = tagstr.split("; ").collect();
+                    targets.contains(&pattern)
+                } else {
+                    tagstr.contains(pattern)
+                }
+            },
+            "nb" => {
+                let mut target = self.notebook.clone();
+                if ignore_case {
+                    target = target.to_lowercase();
+                }
+                if match_whole_word {
+                    let targets: Vec<&str> = target.split_whitespace().collect();
+                    targets.contains(&pattern)
+                } else {
+                    target.contains(pattern)
+                }
+            },
+            "cr" => {
+                let timestamp = self.created.format("%F %T").to_string();
+                timestamp.contains(pattern)
+            },
+            "up" => {
+                let timestamp = self.updated.format("%F %T").to_string();
+                timestamp.contains(pattern)
+            },
+            "all" => {
+                let mut content: String = format!("{}\n{}\n{}\n{}\n{}\n{}",
+                    self.title,
+                    self.tags.join("; "),
+                    self.notebook,
+                    self.created.format("%F %T"),
+                    self.updated.format("%F %T"),
+                    self.body);
+                if ignore_case {
+                    content = content.to_lowercase();
+                }
+                if match_whole_word {
+                    let targets: Vec<&str> = content.split_whitespace().collect();
+                    targets.contains(&pattern)
+                } else {
+                    content.contains(pattern)
+                }
+            },
+            _ => false,
+        }
+    }
+}
+
 fn parse_note(inp: PathBuf) -> Note {
     let raw: String = fs::read_to_string(&inp).expect("Reading file failed");
     let mut lines = raw.lines();
@@ -84,7 +154,7 @@ fn save_note(note: Note, path: &PathBuf) {
 }
 
 /// Load all markdown file from the 'repo_path', sort with updated time, and take first num elements
-fn most_recent_notes(repo_path: &PathBuf, num: u16) -> Vec<Note> {
+fn load_notes(repo_path: &PathBuf) -> Vec<Note> {
     let files = glob(repo_path.join("*.md").to_str().unwrap()).unwrap();
     let mut notes: Vec<Note> = Vec::new();
     for item in files {
@@ -94,7 +164,7 @@ fn most_recent_notes(repo_path: &PathBuf, num: u16) -> Vec<Note> {
         }
     }
     notes.sort_by(|a, b| b.updated.cmp(&a.updated));
-    notes[..num as usize].to_vec()
+    notes
 }
 
 /// Save 'notes' to disk and display them to console
@@ -167,14 +237,25 @@ pub fn run(args: ArgMatches) {
         Some(("list", args)) => {
             let num: &u16 = args.get_one::<u16>("number").unwrap();
             let confs: Config = load_configs();
-            let notes: Vec<Note> = most_recent_notes(
-                &confs.app_home.join("repo"),
-                *num);
-            save_display(notes, confs)
+            let all_notes: Vec<Note> = load_notes(&confs.app_home.join("repo"));
+            let recent_notes = all_notes[.. *num as usize].to_vec();
+            save_display(recent_notes, confs)
         },
         Some(("search", args)) => {
             let ptns: Vec<String>  = args.get_many("patterns").unwrap().cloned().collect();
-            println!("Patterns are: {:?}", ptns)
+            let all_notes: Vec<Note> = load_notes(&confs.app_home.join("repo"));
+            let mut matched: Vec<Note> = Vec::new();
+            for note in all_notes {
+                let mut all_match: bool = true;
+                for ptn in &ptns {
+                    if ! (note.matches(&ptn, "all", true, false, true)) {
+                        all_match = false;
+                        break
+                    }
+                }
+                if all_match { matched.push(note); }
+            }
+            save_display(matched, confs);
         },
         _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents `None`"),
     }
