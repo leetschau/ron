@@ -14,6 +14,29 @@ use std::collections::BTreeMap;
 const TEMP_NOTE: &str = "/tmp/dsnote-tmp.md";
 const CACHE_FILE: &str = ".notes-cache";
 
+enum SearchItem {
+    Title(String),
+    Tag(String),
+    Notebook(String),
+    Created(NaiveDateTime),
+    Updated(NaiveDateTime),
+    Content(String),  // all texts including title, tags, etc
+}
+
+struct TextMatch {
+    ignore_case: bool,
+    match_whole_word: bool,
+}
+enum SearchFlag {
+    Text(TextMatch),
+    Time(bool),
+}
+
+struct SearchTerm {
+    text: SearchItem,
+    flag: SearchFlag,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, )]
 struct Note {
     title: String,
@@ -40,53 +63,80 @@ impl fmt::Display for Note {
 }
 
 impl Note {
-    fn matches(&self, pattern: &str, key: &str, ignore_case: bool, match_whole_word: bool, before: bool) -> bool {
-        match key {
-            "ti" => {
-                let mut target = self.title.clone();
-                if ignore_case {
-                    target = target.to_lowercase();
-                }
-                if match_whole_word {
-                    let targets: Vec<&str> = target.split_whitespace().collect();
-                    targets.contains(&pattern)
-                } else {
-                    target.contains(pattern)
+    fn matches(&self, term: SearchTerm) -> bool {
+        match term.text {
+            SearchItem::Title(pattern)  => {
+                let mut target: String = self.title.clone();
+                match term.flag {
+                    SearchFlag::Text(tflag) => {
+                        if tflag.ignore_case {
+                            target = target.to_lowercase();
+                        }
+                        if tflag.match_whole_word {
+                            let targets: Vec<&str> = target.split_whitespace().collect();
+                            targets.contains(&pattern.as_str())
+                        } else {
+                            target.contains(&pattern)
+                        }
+                    },
+                    _ => panic!("You can't use b/B on Title"),
                 }
             },
-            "ta" => {
+            SearchItem::Tag(pattern)  => {
                 let mut tagstr: String = self.tags.join("; ");
-                if ignore_case {
-                    tagstr = tagstr.to_lowercase();
-                }
-                if match_whole_word {
-                    let targets: Vec<&str> = tagstr.split("; ").collect();
-                    targets.contains(&pattern)
-                } else {
-                    tagstr.contains(pattern)
+                match term.flag {
+                    SearchFlag::Text(tflag) => {
+                        if tflag.ignore_case {
+                            tagstr = tagstr.to_lowercase();
+                        }
+                        if tflag.match_whole_word {
+                            let targets: Vec<&str> = tagstr.split("; ").collect();
+                            targets.contains(&pattern.as_str())
+                        } else {
+                            tagstr.contains(&pattern)
+                        }
+                    }
+                    _ => panic!("You can't use b/B on Tags")
                 }
             },
-            "nb" => {
+            SearchItem::Notebook(pattern)  => {
                 let mut target = self.notebook.clone();
-                if ignore_case {
-                    target = target.to_lowercase();
+                match term.flag {
+                    SearchFlag::Text(tflag) => {
+                        if tflag.ignore_case {
+                            target = target.to_lowercase();
+                        }
+                        if tflag.match_whole_word {
+                            let targets: Vec<&str> = target.split_whitespace().collect();
+                            targets.contains(&pattern.as_str())
+                        } else {
+                            target.contains(&pattern)
+                        }
+                    }
+                    _ => panic!("You can't use b/B on Notebook")
                 }
-                if match_whole_word {
-                    let targets: Vec<&str> = target.split_whitespace().collect();
-                    targets.contains(&pattern)
-                } else {
-                    target.contains(pattern)
+            },
+            SearchItem::Created(pattern)  => {
+                match term.flag {
+                    SearchFlag::Text(_) => panic!("Add flag B/b to your search pattern"),
+                    SearchFlag::Time(is_before) => if is_before {
+                        self.created < pattern
+                    } else {
+                        self.created >= pattern
+                    },
                 }
             },
-            "cr" => {
-                let timestamp = self.created.format("%F %T").to_string();
-                timestamp.contains(pattern)
+            SearchItem::Updated(pattern)  => {
+                match term.flag {
+                    SearchFlag::Text(_) => panic!("Add flag B/b to your search pattern"),
+                    SearchFlag::Time(is_before) => if is_before {
+                        self.updated < pattern
+                    } else {
+                        self.updated >= pattern
+                    },
+                }
             },
-            "up" => {
-                let timestamp = self.updated.format("%F %T").to_string();
-                timestamp.contains(pattern)
-            },
-            "all" => {
+            SearchItem::Content(pattern)  => {
                 let mut content: String = format!("{}\n{}\n{}\n{}\n{}\n{}",
                     self.title,
                     self.tags.join("; "),
@@ -94,19 +144,36 @@ impl Note {
                     self.created.format("%F %T"),
                     self.updated.format("%F %T"),
                     self.body);
-                if ignore_case {
-                    content = content.to_lowercase();
-                }
-                if match_whole_word {
-                    let targets: Vec<&str> = content.split_whitespace().collect();
-                    targets.contains(&pattern)
-                } else {
-                    content.contains(pattern)
+                match term.flag {
+                    SearchFlag::Text(tflag) => {
+                        if tflag.ignore_case {
+                            content = content.to_lowercase();
+                        }
+                        if tflag.match_whole_word {
+                            let targets: Vec<&str> = content.split_whitespace().collect();
+                            targets.contains(&pattern.as_str())
+                        } else {
+                            content.contains(&pattern)
+                        }
+                    }
+                    _ => panic!("You can't use b/B on Note contents")
                 }
             },
-            _ => false,
         }
     }
+}
+
+fn parse_datetime(datetime: &str) -> NaiveDateTime {
+    let fulldt: String = match datetime.len() {
+        4 => format!("{}{}", datetime, "-01-01 00:00:00"),
+        7 => format!("{}{}", datetime, "-01 00:00:00"),
+        10 => format!("{}{}", datetime, " 00:00:00"),
+        13 => format!("{}{}", datetime, ":00:00"),
+        16 => format!("{}{}", datetime, ":00"),
+        19 => String::from(datetime),
+        _ => panic!("Invalid DateTime format: {}", datetime),
+    };
+    NaiveDateTime::parse_from_str(fulldt.as_str(), "%Y-%m-%d %H:%M:%S").unwrap()
 }
 
 fn parse_note(inp: PathBuf) -> Note {
@@ -169,6 +236,9 @@ fn load_notes(repo_path: &PathBuf) -> Vec<Note> {
 
 /// Save 'notes' to disk and display them to console
 fn save_display(notes: Vec<Note>, conf: Config) {
+    if notes.len() == 0 {
+        return;
+    }
     let mut notes_dict: BTreeMap<u16, &Note> = BTreeMap::new();
     let mut index: u16 = 0;
     for note in &notes {
@@ -182,6 +252,47 @@ fn save_display(notes: Vec<Note>, conf: Config) {
     println!("No.   Updated, Notebook, Title, Created, Tags");
     for (index, note) in &notes_dict {
         println!("{:2}. {}", index, note);
+    }
+}
+
+fn build_search_term(ptn: &str) -> SearchTerm {
+    let elements: Vec<&str> = ptn.split(":" as &str).collect();
+    match elements.len() {
+        1 => SearchTerm {
+            text: SearchItem::Content(String::from(ptn)),
+            flag: SearchFlag::Text(TextMatch {ignore_case: true, match_whole_word: false}),
+        },
+        2 => SearchTerm {
+            text: match elements[0] {
+                "ti" => SearchItem::Title(String::from(elements[1])),
+                "ta" => SearchItem::Tag(String::from(elements[1])),
+                "nb" => SearchItem::Notebook(String::from(elements[1])),
+                "cr" => SearchItem::Created(parse_datetime(elements[1])),
+                "up" => SearchItem::Updated(parse_datetime(elements[1])),
+                _ => panic!("Invalid key name: {}", elements[0]),
+            },
+            flag: SearchFlag::Text(TextMatch {ignore_case: true, match_whole_word: false}),
+        },
+        3 => SearchTerm {
+            text: match elements[0] {
+                "ti" => SearchItem::Title(String::from(elements[1])),
+                "ta" => SearchItem::Tag(String::from(elements[1])),
+                "nb" => SearchItem::Notebook(String::from(elements[1])),
+                "cr" => SearchItem::Created(parse_datetime(elements[1])),
+                "up" => SearchItem::Updated(parse_datetime(elements[1])),
+                _ => panic!("Invalid key name: {}", elements[0]),
+            },
+            flag: match elements[2] {
+                "B" => SearchFlag::Time(false),
+                "b" => SearchFlag::Time(true),
+                "w" | "wi" | "iw" => SearchFlag::Text(TextMatch {ignore_case: true, match_whole_word: true}),
+                "I" | "IW" | "WI" => SearchFlag::Text(TextMatch {ignore_case: false, match_whole_word: false}),
+                "iW" | "Wi" | "i" | "W" => SearchFlag::Text(TextMatch {ignore_case: true, match_whole_word: false}),
+                "Iw" | "wI" => SearchFlag::Text(TextMatch {ignore_case: false, match_whole_word: true}),
+                _ => panic!("Invalid flags: {}", elements[2]),
+            },
+        },
+        _ => panic!("Bad search pattern format!")
     }
 }
 
@@ -248,7 +359,12 @@ pub fn run(args: ArgMatches) {
             for note in all_notes {
                 let mut all_match: bool = true;
                 for ptn in &ptns {
-                    if ! (note.matches(&ptn, "all", true, false, true)) {
+                    // if ! (note.matches(&ptn, "all", true, false, true)) {
+                    let search_term = SearchTerm {
+                        text: SearchItem::Content(String::from(ptn)),
+                        flag: SearchFlag::Text(TextMatch {ignore_case: true, match_whole_word: false}),
+                    };
+                    if ! (note.matches(search_term)) {
                         all_match = false;
                         break
                     }
@@ -257,6 +373,22 @@ pub fn run(args: ArgMatches) {
             }
             save_display(matched, confs);
         },
+        Some(("search-complex", args)) => {
+            let ptns: Vec<String>  = args.get_many("patterns").unwrap().cloned().collect();
+            let all_notes: Vec<Note> = load_notes(&confs.app_home.join("repo"));
+            let mut matched: Vec<Note> = Vec::new();
+            for note in all_notes {
+                let mut all_match: bool = true;
+                for ptn in &ptns {
+                    if !(note.matches(build_search_term(ptn))) {
+                        all_match = false;
+                        break
+                    }
+                }
+                if all_match { matched.push(note); }
+            }
+            save_display(matched, confs);
+        }
         _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents `None`"),
     }
 }

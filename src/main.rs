@@ -66,6 +66,7 @@ fn parse_args() -> ArgMatches {
         )
         .get_matches()
 }
+
 fn main() {
     ron::run(parse_args());
 }
