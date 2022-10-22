@@ -45,6 +45,11 @@ fn parse_args() -> ArgMatches {
                 ),
         )
         .subcommand(
+            Command::new("list-notebook")
+                .visible_alias("lnb")
+                .about("list notebooks"),
+        )
+        .subcommand(
             Command::new("search")
                 .visible_alias("s")
                 .about("search pattern(s) in notes")
@@ -62,6 +67,17 @@ fn parse_args() -> ArgMatches {
                     Arg::new("patterns")
                         .help("pattern(s) to be searched")
                         .action(ArgAction::Append),
+                ),
+        )
+        .subcommand(
+            Command::new("view")
+                .visible_alias("v")
+                .about("view the selected note")
+                .arg(
+                    Arg::new("index")
+                        .help("index of the note to be edited.")
+                        .value_parser(clap::value_parser!(u16).range(..30000))
+                        .default_value("1"),
                 ),
         )
         .get_matches()

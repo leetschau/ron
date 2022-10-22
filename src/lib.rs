@@ -9,10 +9,12 @@ use glob::glob;
 use config::{load_configs, };
 use serde::{Serialize, Deserialize};
 use crate::config::Config;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const TEMP_NOTE: &str = "/tmp/dsnote-tmp.md";
 const CACHE_FILE: &str = ".notes-cache";
+const REPO_DIR: &str = "repo";
+const NOTE_PREFIX: &str = "repo/note";
 
 enum SearchItem {
     Title(String),
@@ -312,7 +314,7 @@ pub fn run(args: ArgMatches) {
                 .expect("Error: Editor returned a non-zero status");
             let new_note = parse_note(PathBuf::from(TEMP_NOTE));
             let timestamp = Local::now().format("%y%m%d%H%M%S");
-            let note_rel_path = format!("repo/note{timestamp}.md");
+            let note_rel_path = format!("{NOTE_PREFIX}{timestamp}.md");
             save_note(new_note, &confs.app_home.join(note_rel_path));
         },
         Some(("delete", args)) => {
@@ -331,7 +333,7 @@ pub fn run(args: ArgMatches) {
                 .expect("Unable to read cache file, run `l` or `s` command to fix this.");
             let notes_dict: BTreeMap<u16, Note> = serde_pickle::from_slice(
                 &cache, Default::default()).unwrap();
-            let target_path: &str = &notes_dict[idx].filepath.to_str().unwrap();
+            let target_path: &str = notes_dict[idx].filepath.to_str().unwrap();
             let old_note: Note = parse_note(PathBuf::from(target_path));
             let new_note = Note {
                 updated: Local::now().naive_local(),
@@ -348,13 +350,23 @@ pub fn run(args: ArgMatches) {
         Some(("list", args)) => {
             let num: &u16 = args.get_one::<u16>("number").unwrap();
             let confs: Config = load_configs();
-            let all_notes: Vec<Note> = load_notes(&confs.app_home.join("repo"));
+            let all_notes: Vec<Note> = load_notes(&confs.app_home.join(REPO_DIR));
             let recent_notes = all_notes[.. *num as usize].to_vec();
             save_display(recent_notes, confs)
         },
+        Some(("list-notebook", _)) => {
+            let all_notes: Vec<Note> = load_notes(&confs.app_home.join(REPO_DIR));
+            let mut notebooks = BTreeSet::new();
+            for note in all_notes {
+                notebooks.insert(note.notebook);
+            }
+            for nb in notebooks {
+                println!("{}", nb)
+            }
+        },
         Some(("search", args)) => {
             let ptns: Vec<String>  = args.get_many("patterns").unwrap().cloned().collect();
-            let all_notes: Vec<Note> = load_notes(&confs.app_home.join("repo"));
+            let all_notes: Vec<Note> = load_notes(&confs.app_home.join(REPO_DIR));
             let mut matched: Vec<Note> = Vec::new();
             for note in all_notes {
                 let mut all_match: bool = true;
@@ -375,7 +387,7 @@ pub fn run(args: ArgMatches) {
         },
         Some(("search-complex", args)) => {
             let ptns: Vec<String>  = args.get_many("patterns").unwrap().cloned().collect();
-            let all_notes: Vec<Note> = load_notes(&confs.app_home.join("repo"));
+            let all_notes: Vec<Note> = load_notes(&confs.app_home.join(REPO_DIR));
             let mut matched: Vec<Note> = Vec::new();
             for note in all_notes {
                 let mut all_match: bool = true;
@@ -388,7 +400,32 @@ pub fn run(args: ArgMatches) {
                 if all_match { matched.push(note); }
             }
             save_display(matched, confs);
-        }
+        },
+        Some(("view", args)) => {
+            let idx: &u16 = args.get_one::<u16>("index").unwrap();
+            let cache: Vec<u8> = fs::read(confs.app_home.join(CACHE_FILE))
+                .expect("Unable to read cache file, run `l` or `s` command to fix this.");
+            let notes_dict: BTreeMap<u16, Note> = serde_pickle::from_slice(
+                &cache, Default::default()).unwrap();
+            let target_path: &str = notes_dict[idx].filepath.to_str().unwrap();
+            let viewr_cmd: Vec<&str> = confs.viewer.split_whitespace().collect();
+            match viewr_cmd.len() {
+                1 => { SysCmd::new(confs.viewer)
+                    .arg(target_path)
+                    .spawn()
+                    .expect("nvim met an error")
+                    .wait()
+                    .expect("Error: Editor returned a non-zero status");},
+                2 => { SysCmd::new(viewr_cmd[0])
+                    .arg(viewr_cmd[1])
+                    .arg(target_path)
+                    .spawn()
+                    .expect("nvim met an error")
+                    .wait()
+                    .expect("Error: Editor returned a non-zero status");},
+                _ => unreachable!("There're at most 1 argument permitted in viewer command"),
+            }
+        },
         _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents `None`"),
     }
 }
