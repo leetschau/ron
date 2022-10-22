@@ -12,6 +12,16 @@ fn parse_args() -> ArgMatches {
                 .about("add a new note"),
         )
         .subcommand(
+            Command::new("backup")
+                .visible_alias("b")
+                .about("backup notes to remote repo")
+                .arg(
+                    Arg::new("message")
+                        .help("summarization of committed updates.")
+                        .default_value(""),
+                ),
+        )
+        .subcommand(
             Command::new("delete")
                 .visible_alias("del")
                 .about("delete the selected note")
@@ -68,6 +78,11 @@ fn parse_args() -> ArgMatches {
                         .help("pattern(s) to be searched")
                         .action(ArgAction::Append),
                 ),
+        )
+        .subcommand(
+            Command::new("sync")
+                .visible_alias("syn")
+                .about("sync (pull) notes from remote repo"),
         )
         .subcommand(
             Command::new("view")

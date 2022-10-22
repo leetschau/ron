@@ -11,11 +11,13 @@ pub struct Config {
     pub viewer: String,
 }
 
+const CONF_FILE: &str = "config.json";
+
 pub fn load_configs() -> Config {
     match ProjectDirs::from("me", "clouds", "donno") {
         Some(project_dirs) => {
             let config_path = project_dirs.config_dir();
-            let config_file_path = config_path.join("config.json");
+            let config_file_path = config_path.join(CONF_FILE);
             if Path::new(&config_file_path).exists() {
                 let raw = fs::read_to_string(config_file_path).expect("Unable to read file");
                 serde_json::from_str(&raw).expect("JSON was not well-formatted")
@@ -36,6 +38,25 @@ pub fn load_configs() -> Config {
                     .expect("Unable to write file");
                 default_conf
             }
+        },
+        None => panic!("Get configuration file failed!"),
+    }
+}
+
+pub fn save_configs(conf: Config) {
+    match ProjectDirs::from("me", "clouds", "donno") {
+        Some(project_dirs) => {
+            let config_path = project_dirs.config_dir();
+            let config_file_path = config_path.join(CONF_FILE);
+            if !Path::new(&config_file_path).exists() {
+                match fs::create_dir_all(config_path) {
+                    Ok(()) => (),
+                    Err(error) => panic!("Mkdir failed: {:?}", error),
+                }
+            };
+            let content = serde_json::to_string(&conf).unwrap();
+            fs::write(&config_file_path, content)
+                .unwrap_or_else(|_| panic!("Writing note file {} failed", &config_file_path.display()));
         },
         None => panic!("Get configuration file failed!"),
     }

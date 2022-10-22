@@ -317,6 +317,40 @@ pub fn run(args: ArgMatches) {
             let note_rel_path = format!("{NOTE_PREFIX}{timestamp}.md");
             save_note(new_note, &confs.app_home.join(note_rel_path));
         },
+        Some(("backup", args)) => {
+            let msg: &String = args.get_one("message").unwrap();
+            match msg.len() {
+                0 => { SysCmd::new("git")
+                    .arg("-C")
+                    .arg(confs.app_home.join(REPO_DIR))
+                    .arg("status")
+                    .spawn()
+                    .expect("run `git status` failed"); },
+                _ => { SysCmd::new("git")
+                    .arg("-C")
+                    .arg(confs.app_home.join(REPO_DIR))
+                    .arg("add")
+                    .arg("-A")
+                    .spawn()
+                    .expect("run `git add` failed");
+                    SysCmd::new("git")
+                    .arg("-C")
+                    .arg(confs.app_home.join(REPO_DIR))
+                    .arg("commit")
+                    .arg("-m")
+                    .arg(msg)
+                    .spawn()
+                    .expect("run `git commit` failed");
+                    SysCmd::new("git")
+                    .arg("-C")
+                    .arg(confs.app_home.join(REPO_DIR))
+                    .arg("push")
+                    .arg("origin")
+                    .arg("master")
+                    .spawn()
+                    .expect("run `git push origin master` failed"); },
+            }
+        },
         Some(("delete", args)) => {
             let idx: &u16 = args.get_one::<u16>("index").unwrap();
             let cache: Vec<u8> = fs::read(confs.app_home.join(CACHE_FILE))
@@ -400,6 +434,16 @@ pub fn run(args: ArgMatches) {
                 if all_match { matched.push(note); }
             }
             save_display(matched, confs);
+        },
+        Some(("sync", _)) => {
+            SysCmd::new("git")
+                .arg("-C")
+                .arg(confs.app_home.join(REPO_DIR))
+                .arg("pull")
+                .arg("origin")
+                .arg("master")
+                .spawn()
+                .expect("run `git pull origin master` failed");
         },
         Some(("view", args)) => {
             let idx: &u16 = args.get_one::<u16>("index").unwrap();
