@@ -22,6 +22,29 @@ fn parse_args() -> ArgMatches {
                 ),
         )
         .subcommand(
+            Command::new("config")
+                .visible_alias("conf")
+                .about("get/set configurations")
+                .arg(
+                    Arg::new("get")
+                        .short('g')
+                        .required(false)
+                        .help("print all (or specified) configurations")
+                        .num_args(0..=1)
+                        .default_missing_value("all")
+                        .default_value(""),
+                )
+                .arg(
+                    Arg::new("set")
+                        .short('s')
+                        .required(false)
+                        .conflicts_with("get")
+                        .num_args(2)
+                        .default_value("")
+                        .help("set specified configurations"),
+                ),
+        )
+        .subcommand(
             Command::new("delete")
                 .visible_alias("del")
                 .about("delete the selected note")

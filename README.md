@@ -1,6 +1,10 @@
 # ron: donno in Rust
 
-## Key Components of Implementation
+Install: `cargo install --path .`
+
+Usage: `ron -h`
+
+## Development
 
 Here the key compoments of ron, and the positions where it's discussed in
 clr2022 are listed:

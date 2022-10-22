@@ -1,12 +1,12 @@
 mod config;
 
 use std::{fmt, fs};
-use std::path::{PathBuf, };
+use std::path::PathBuf;
 use std::process::Command as SysCmd;
 use clap::ArgMatches;
 use chrono::{Local, NaiveDateTime};
 use glob::glob;
-use config::{load_configs, };
+use config::{load_configs, print_config, set_config};
 use serde::{Serialize, Deserialize};
 use crate::config::Config;
 use std::collections::{BTreeMap, BTreeSet};
@@ -332,7 +332,9 @@ pub fn run(args: ArgMatches) {
                     .arg("add")
                     .arg("-A")
                     .spawn()
-                    .expect("run `git add` failed");
+                    .expect("run `git add` failed")
+                    .wait()
+                    .expect("Error: Editor returned a non-zero status");
                     SysCmd::new("git")
                     .arg("-C")
                     .arg(confs.app_home.join(REPO_DIR))
@@ -340,7 +342,9 @@ pub fn run(args: ArgMatches) {
                     .arg("-m")
                     .arg(msg)
                     .spawn()
-                    .expect("run `git commit` failed");
+                    .expect("run `git commit` failed")
+                    .wait()
+                    .expect("Error: Editor returned a non-zero status");
                     SysCmd::new("git")
                     .arg("-C")
                     .arg(confs.app_home.join(REPO_DIR))
@@ -348,7 +352,19 @@ pub fn run(args: ArgMatches) {
                     .arg("origin")
                     .arg("master")
                     .spawn()
-                    .expect("run `git push origin master` failed"); },
+                    .expect("run `git push origin master` failed") 
+                    .wait()
+                    .expect("Error: Editor returned a non-zero status"); },
+            }
+        },
+        Some(("config", args)) => {
+            let ck: &String = args.get_one("get").unwrap();
+            let ckv: Vec<String> = args.get_many("set").unwrap().cloned().collect();
+            match ck.as_str() {
+                "" if ckv.len() == 1 => print_config("all"),
+                "all" => print_config("all"),
+                "" if ckv.len() == 2 => set_config(ckv),
+                _ => print_config(ck),
             }
         },
         Some(("delete", args)) => {

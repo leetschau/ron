@@ -43,6 +43,18 @@ pub fn load_configs() -> Config {
     }
 }
 
+pub fn print_config(key: &str) {
+    let confs = load_configs();
+    match key {
+        "all" => println!("{:?}", confs),
+        "app_home" => println!("{:?}", confs.app_home),
+        "default_notebook" => println!("{:?}", confs.default_notebook),
+        "editor" => println!("{:?}", confs.editor),
+        "viewer" => println!("{:?}", confs.viewer),
+        _ => println!("Invalid key name: {}", key),
+    }
+}
+
 pub fn save_configs(conf: Config) {
     match ProjectDirs::from("me", "clouds", "donno") {
         Some(project_dirs) => {
@@ -60,4 +72,23 @@ pub fn save_configs(conf: Config) {
         },
         None => panic!("Get configuration file failed!"),
     }
+}
+
+pub fn set_config(kv: Vec<String>) {
+    let confs = load_configs();
+    let key: &str = &kv[0];
+    let value: &str = &kv[1];
+
+    let newconf = match key {
+        "app_home" => Config { app_home: PathBuf::from(value), ..confs },
+        "default_notebook" => Config {
+            default_notebook: String::from(value), ..confs },
+        "editor" => Config { editor: String::from(value), ..confs },
+        "viewer" => Config { viewer: String::from(value), ..confs },
+        _ => {
+            println!("Invalid key name: {}", key);
+            confs
+        }
+    };
+    save_configs(newconf);
 }
