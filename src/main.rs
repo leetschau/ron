@@ -22,6 +22,13 @@ fn parse_args() -> ArgMatches {
                 ),
         )
         .subcommand(
+            Command::new("backup-patch")
+                .visible_alias("bp")
+                .about("backup unversioned notes to patch file \
+                    /tmp/donno-patch-<git-hash>.tgz \n\
+                    (defined in lib.rs as const string)"),
+        )
+        .subcommand(
             Command::new("config")
                 .visible_alias("conf")
                 .about("get/set configurations")
@@ -64,6 +71,16 @@ fn parse_args() -> ArgMatches {
                         .help("index of the note to be edited.")
                         .value_parser(clap::value_parser!(u16).range(..30000))
                         .default_value("1"),
+                ),
+        )
+        .subcommand(
+            Command::new("import-patch")
+                .visible_alias("ip")
+                .about("import notes from patch file")
+                .arg(
+                    Arg::new("patch_filepath")
+                        .value_name("PATCH_FILE_PATH")
+                        .help("path of the patch file to be imported")
                 ),
         )
         .subcommand(

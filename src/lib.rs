@@ -12,6 +12,8 @@ use crate::config::Config;
 use std::collections::{BTreeMap, BTreeSet};
 
 const TEMP_NOTE: &str = "/tmp/dsnote-tmp.md";
+const PATCH_PREFIX: &str = "/tmp/donno-patch";
+const PATCH_EXT: &str = "tgz";
 const CACHE_FILE: &str = ".notes-cache";
 const REPO_DIR: &str = "repo";
 const NOTE_PREFIX: &str = "repo/note";
@@ -163,6 +165,16 @@ impl Note {
             },
         }
     }
+}
+
+fn get_git_head(git_root: &str) -> String {
+    let cmdout = SysCmd::new("git")
+        .args(["-C", git_root, "rev-parse", "--verify", "--short", "HEAD"])
+        .output()
+        .expect("Get git HEAD hash failed")
+        .stdout;
+    let rawstr = String::from_utf8(cmdout).expect("Unexpected characters in output");
+    String::from(rawstr.trim())
 }
 
 fn parse_datetime(datetime: &str) -> NaiveDateTime {
@@ -357,6 +369,29 @@ pub fn run(args: ArgMatches) {
                     .expect("Error: Editor returned a non-zero status"); },
             }
         },
+        Some(("backup-patch", _)) => {
+            let cmdout = SysCmd::new("git")
+                .arg("-C")
+                .arg(confs.app_home.join(REPO_DIR))
+                .arg("status")
+                .arg("-s")
+                .output()
+                .expect("run `git status -s` failed")
+                .stdout;
+            let rawstr = String::from_utf8(cmdout).expect("Unexpected characters in output");
+            let lines = rawstr.lines().collect::<Vec<&str>>();
+            let changed_files = lines.iter().map(|x| &x[3..]).collect::<Vec<&str>>();
+            let git_head_hash = get_git_head(confs.app_home.join(REPO_DIR).to_str().unwrap());
+            let patch_filename = format!("{PATCH_PREFIX}-{git_head_hash}.{PATCH_EXT}");
+            SysCmd::new("tar")
+                .args(["-cvzf", patch_filename.as_str(), "-C"])
+                .arg(confs.app_home.join(REPO_DIR))
+                .args(&changed_files)
+                .spawn()
+                .expect("Create tar file failed")
+                .wait()
+                .expect("Error: tar command returned a non-zero status");
+        },
         Some(("config", args)) => {
             let ck: &String = args.get_one("get").unwrap();
             let ckv: Vec<String> = args.get_many("set").unwrap().cloned().collect();
@@ -396,6 +431,28 @@ pub fn run(args: ArgMatches) {
                 .expect("nvim met an error")
                 .wait()
                 .expect("Error: Editor returned a non-zero status");
+        },
+        Some(("import-patch", args)) => {
+            let imported_path = args.get_one::<String>("patch_filepath").unwrap();
+            let imported_file = PathBuf::from(imported_path);
+            let imported_fn = imported_file.file_name().unwrap().to_str().unwrap();
+
+            let git_head_hash = get_git_head(confs.app_home.join(REPO_DIR).to_str().unwrap());
+            let target_path = format!("{PATCH_PREFIX}-{git_head_hash}.{PATCH_EXT}");
+            let target_file = PathBuf::from(target_path);
+            let target_fn = target_file.file_name().unwrap().to_str().unwrap();
+
+            if !(target_fn.eq(imported_fn)) {
+                println!("Git head hash mismatch: current repo is: {}", git_head_hash);
+                return;
+            }
+            SysCmd::new("tar")
+                .args(["-xvf", imported_path.as_str(), "-C"])
+                .arg(confs.app_home.join(REPO_DIR))
+                .spawn()
+                .expect("Extract tar file failed")
+                .wait()
+                .expect("Error: tar command returned a non-zero status");
         },
         Some(("list", args)) => {
             let num: &u16 = args.get_one::<u16>("number").unwrap();
@@ -459,7 +516,9 @@ pub fn run(args: ArgMatches) {
                 .arg("origin")
                 .arg("master")
                 .spawn()
-                .expect("run `git pull origin master` failed");
+                .expect("run `git pull origin master` failed")
+                .wait()
+                .expect("Failed to sync with remote repo");
         },
         Some(("view", args)) => {
             let idx: &u16 = args.get_one::<u16>("index").unwrap();
