@@ -49,3 +49,7 @@ clr2022 are listed:
     + Build a release binary with Cargo: chapter 11
 * Publish package to public registry:
 
+## Bug List
+
+* `dn s EvaluatePrequential` has no search results (reported 2022.11.24);
+* `dn s C4.5` has no search results (reported 2022.12.16);
