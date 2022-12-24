@@ -73,14 +73,16 @@ impl Note {
                 let mut target: String = self.title.clone();
                 match term.flag {
                     SearchFlag::Text(tflag) => {
+                        let mut ptn: String = pattern.clone();
                         if tflag.ignore_case {
                             target = target.to_lowercase();
+                            ptn = ptn.to_lowercase();
                         }
                         if tflag.match_whole_word {
                             let targets: Vec<&str> = target.split_whitespace().collect();
-                            targets.contains(&pattern.as_str())
+                            targets.contains(&ptn.as_str())
                         } else {
-                            target.contains(&pattern)
+                            target.contains(&ptn)
                         }
                     },
                     _ => panic!("You can't use b/B on Title"),
@@ -90,14 +92,16 @@ impl Note {
                 let mut tagstr: String = self.tags.join("; ");
                 match term.flag {
                     SearchFlag::Text(tflag) => {
+                        let mut ptn: String = pattern.clone();
                         if tflag.ignore_case {
                             tagstr = tagstr.to_lowercase();
+                            ptn = ptn.to_lowercase();
                         }
                         if tflag.match_whole_word {
                             let targets: Vec<&str> = tagstr.split("; ").collect();
-                            targets.contains(&pattern.as_str())
+                            targets.contains(&ptn.as_str())
                         } else {
-                            tagstr.contains(&pattern)
+                            tagstr.contains(&ptn)
                         }
                     }
                     _ => panic!("You can't use b/B on Tags")
@@ -107,14 +111,16 @@ impl Note {
                 let mut target = self.notebook.clone();
                 match term.flag {
                     SearchFlag::Text(tflag) => {
+                        let mut ptn: String = pattern.clone();
                         if tflag.ignore_case {
                             target = target.to_lowercase();
+                            ptn = ptn.to_lowercase();
                         }
                         if tflag.match_whole_word {
                             let targets: Vec<&str> = target.split_whitespace().collect();
-                            targets.contains(&pattern.as_str())
+                            targets.contains(&ptn.as_str())
                         } else {
-                            target.contains(&pattern)
+                            target.contains(&ptn)
                         }
                     }
                     _ => panic!("You can't use b/B on Notebook")
@@ -150,14 +156,16 @@ impl Note {
                     self.body);
                 match term.flag {
                     SearchFlag::Text(tflag) => {
+                        let mut ptn: String = pattern.clone();
                         if tflag.ignore_case {
                             content = content.to_lowercase();
+                            ptn = ptn.to_lowercase();
                         }
                         if tflag.match_whole_word {
                             let targets: Vec<&str> = content.split_whitespace().collect();
-                            targets.contains(&pattern.as_str())
+                            targets.contains(&ptn.as_str())
                         } else {
-                            content.contains(&pattern)
+                            content.contains(&ptn)
                         }
                     }
                     _ => panic!("You can't use b/B on Note contents")
