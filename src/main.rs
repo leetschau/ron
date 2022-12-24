@@ -110,16 +110,6 @@ fn parse_args() -> ArgMatches {
                 ),
         )
         .subcommand(
-            Command::new("search-complex")
-                .visible_alias("sc")
-                .about("search complex pattern(s) in notes")
-                .arg(
-                    Arg::new("patterns")
-                        .help("pattern(s) to be searched")
-                        .action(ArgAction::Append),
-                ),
-        )
-        .subcommand(
             Command::new("sync")
                 .visible_alias("syn")
                 .about("sync (pull) notes from remote repo"),

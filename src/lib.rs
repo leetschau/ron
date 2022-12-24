@@ -486,27 +486,6 @@ pub fn run(args: ArgMatches) {
             for note in all_notes {
                 let mut all_match: bool = true;
                 for ptn in &ptns {
-                    // if ! (note.matches(&ptn, "all", true, false, true)) {
-                    let search_term = SearchTerm {
-                        text: SearchItem::Content(String::from(ptn)),
-                        flag: SearchFlag::Text(TextMatch {ignore_case: true, match_whole_word: false}),
-                    };
-                    if ! (note.matches(search_term)) {
-                        all_match = false;
-                        break
-                    }
-                }
-                if all_match { matched.push(note); }
-            }
-            save_display(matched, confs);
-        },
-        Some(("search-complex", args)) => {
-            let ptns: Vec<String>  = args.get_many("patterns").unwrap().cloned().collect();
-            let all_notes: Vec<Note> = load_notes(&confs.app_home.join(REPO_DIR));
-            let mut matched: Vec<Note> = Vec::new();
-            for note in all_notes {
-                let mut all_match: bool = true;
-                for ptn in &ptns {
                     if !(note.matches(build_search_term(ptn))) {
                         all_match = false;
                         break
