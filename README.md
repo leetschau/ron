@@ -6,6 +6,19 @@ Usage: `ron -h`
 
 ## Development
 
+```
+cargo new --bin --name ron
+cd ron
+# add source files in src/ folder
+cargo run -- s key1 key2 ...
+cargo test
+cargo build
+cargo build --release
+cp target/release/ron ~/.local/bin/dn
+```
+
+## Other Notes
+
 Here the key compoments of ron, and the positions where it's discussed in
 clr2022 are listed:
 
