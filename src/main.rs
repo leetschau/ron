@@ -105,7 +105,7 @@ fn parse_args() -> ArgMatches {
                 .about("search pattern(s) in notes")
                 .arg(
                     Arg::new("patterns")
-                        .help("pattern(s) to be searched")
+                        .help("pattern(s) to be searched, e.g.: `cr:2021:B`, `cr:2022-01-12:b`")
                         .action(ArgAction::Append),
                 ),
         )
