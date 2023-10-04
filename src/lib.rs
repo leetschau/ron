@@ -198,33 +198,37 @@ fn parse_datetime(datetime: &str) -> NaiveDateTime {
     NaiveDateTime::parse_from_str(fulldt.as_str(), "%Y-%m-%d %H:%M:%S").unwrap()
 }
 
-fn parse_note(inp: PathBuf) -> Note {
+fn parse_note(inp: PathBuf) -> Result<Note, String> {
     let raw: String = fs::read_to_string(&inp).expect("Reading file failed");
     let mut lines = raw.lines();
 
-    let titleline: String = String::from(lines.next().unwrap());
-    let title: String = String::from(&titleline[7..]);
+    match lines.next() {
+        Some(titleline) => {
+            let title: String = String::from(&titleline[7..]);
+            let tagline: String = String::from(lines.next().unwrap());
+            let tagstr: &str =&tagline[6..];
+            let tags: Vec<String> = tagstr.split("; ").map(str::to_string).collect();
 
-    let tagline: String = String::from(lines.next().unwrap());
-    let tagstr: &str =&tagline[6..];
-    let tags: Vec<String> = tagstr.split("; ").map(str::to_string).collect();
+            let nbline: String = String::from(lines.next().unwrap());
+            let notebook: String = String::from(&nbline[10..]);
 
-    let nbline: String = String::from(lines.next().unwrap());
-    let notebook: String = String::from(&nbline[10..]);
+            let crline: String = String::from(lines.next().unwrap());
+            let crstr: &str = &crline[9..];
+            let created: NaiveDateTime = NaiveDateTime::parse_from_str(
+                crstr, "%Y-%m-%d %H:%M:%S").unwrap();
 
-    let crline: String = String::from(lines.next().unwrap());
-    let crstr: &str = &crline[9..];
-    let created: NaiveDateTime = NaiveDateTime::parse_from_str(
-        crstr, "%Y-%m-%d %H:%M:%S").unwrap();
+            let upline: String = String::from(lines.next().unwrap());
+            let upstr: &str = &upline[9..];
+            let updated: NaiveDateTime = NaiveDateTime::parse_from_str(
+                upstr, "%Y-%m-%d %H:%M:%S").unwrap();
 
-    let upline: String = String::from(lines.next().unwrap());
-    let upstr: &str = &upline[9..];
-    let updated: NaiveDateTime = NaiveDateTime::parse_from_str(
-        upstr, "%Y-%m-%d %H:%M:%S").unwrap();
+            let body: String = lines.skip(3).collect::<Vec<&str>>().join("\n");
 
-    let body: String = lines.skip(3).collect::<Vec<&str>>().join("\n");
-
-    Note { title, tags, notebook, created, updated, body, filepath: inp}
+            Ok(Note { title, tags, notebook, created, updated, body, filepath: inp})
+        },
+        None => Err(String::from(format!("Note {} is empty, parsing failed",
+                    inp.to_string_lossy()))),
+    }
 }
 
 /// Save a note to file specified by 'path' in text format
@@ -248,7 +252,10 @@ fn load_notes(repo_path: &PathBuf) -> Vec<Note> {
     let mut notes: Vec<Note> = Vec::new();
     for item in files {
         match item {
-            Ok(path) => { let note = parse_note(path); notes.push(note) },
+            Ok(path) => match parse_note(path) {
+                Ok(note) => notes.push(note),
+                Err(msg) => println!("{:?}", msg)
+            },
             Err(e) => println!("{:?}", e),
         }
     }
@@ -332,10 +339,14 @@ pub fn run(args: ArgMatches) {
                 .expect("nvim met an error")
                 .wait()
                 .expect("Error: Editor returned a non-zero status");
-            let new_note = parse_note(PathBuf::from(TEMP_NOTE));
-            let timestamp = Local::now().format("%y%m%d%H%M%S");
-            let note_rel_path = format!("{NOTE_PREFIX}{timestamp}.md");
-            save_note(new_note, &confs.app_home.join(note_rel_path));
+            match parse_note(PathBuf::from(TEMP_NOTE)) {
+                Ok(new_note) => {
+                    let timestamp = Local::now().format("%y%m%d%H%M%S");
+                    let note_rel_path = format!("{NOTE_PREFIX}{timestamp}.md");
+                    save_note(new_note, &confs.app_home.join(note_rel_path));
+                },
+                Err(e) => println!("Note creation failed: {e}")
+            }
         },
         Some(("backup", args)) => {
             let msg: &String = args.get_one("message").unwrap();
@@ -427,18 +438,22 @@ pub fn run(args: ArgMatches) {
             let notes_dict: BTreeMap<u16, Note> = serde_pickle::from_slice(
                 &cache, Default::default()).unwrap();
             let target_path: &str = notes_dict[idx].filepath.to_str().unwrap();
-            let old_note: Note = parse_note(PathBuf::from(target_path));
-            let new_note = Note {
-                updated: Local::now().naive_local(),
-                ..old_note
-            };
-            save_note(new_note, &PathBuf::from(target_path));
-            SysCmd::new(confs.editor)
-                .arg(target_path)
-                .spawn()
-                .expect("nvim met an error")
-                .wait()
-                .expect("Error: Editor returned a non-zero status");
+            match parse_note(PathBuf::from(target_path)) {
+                Ok(old_note) => {
+                    let new_note = Note {
+                        updated: Local::now().naive_local(),
+                        ..old_note
+                    };
+                    save_note(new_note, &PathBuf::from(target_path));
+                    SysCmd::new(confs.editor)
+                        .arg(target_path)
+                        .spawn()
+                        .expect("nvim met an error")
+                        .wait()
+                        .expect("Error: Editor returned a non-zero status");
+                },
+                Err(e) => println!("Note editing failed: {e}")
+            }
         },
         Some(("import-patch", args)) => {
             let imported_path = args.get_one::<String>("patch_filepath").unwrap();
