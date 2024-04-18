@@ -293,22 +293,23 @@ fn build_search_term(ptn: &str) -> SearchTerm {
         },
         2 => SearchTerm {
             text: match elements[0] {
-                "ti" => SearchItem::Title(String::from(elements[1])),
-                "ta" => SearchItem::Tag(String::from(elements[1])),
-                "nb" => SearchItem::Notebook(String::from(elements[1])),
-                "cr" => SearchItem::Created(parse_datetime(elements[1])),
-                "up" => SearchItem::Updated(parse_datetime(elements[1])),
+                "t" => SearchItem::Title(String::from(elements[1])),
+                "g" => SearchItem::Tag(String::from(elements[1])),
+                "n" => SearchItem::Notebook(String::from(elements[1])),
+                "c" => SearchItem::Created(parse_datetime(elements[1])),
+                "u" => SearchItem::Updated(parse_datetime(elements[1])),
                 _ => panic!("Invalid key name: {}", elements[0]),
             },
             flag: SearchFlag::Text(TextMatch {ignore_case: true, match_whole_word: false}),
         },
         3 => SearchTerm {
             text: match elements[0] {
-                "ti" => SearchItem::Title(String::from(elements[1])),
-                "ta" => SearchItem::Tag(String::from(elements[1])),
-                "nb" => SearchItem::Notebook(String::from(elements[1])),
-                "cr" => SearchItem::Created(parse_datetime(elements[1])),
-                "up" => SearchItem::Updated(parse_datetime(elements[1])),
+                "a" => SearchItem::Content(String::from(elements[1])),
+                "t" => SearchItem::Title(String::from(elements[1])),
+                "g" => SearchItem::Tag(String::from(elements[1])),
+                "n" => SearchItem::Notebook(String::from(elements[1])),
+                "c" => SearchItem::Created(parse_datetime(elements[1])),
+                "u" => SearchItem::Updated(parse_datetime(elements[1])),
                 _ => panic!("Invalid key name: {}", elements[0]),
             },
             flag: match elements[2] {

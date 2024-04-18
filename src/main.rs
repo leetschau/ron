@@ -1,5 +1,28 @@
 use clap::{command, Arg, ArgAction, Command, ArgMatches};
 
+const SEARCH_HELP: &str =
+"pattern(s) to be searched, format: [<prefix>:]<stem>[:<suffix>]`.
+  Prefix (matching scope) can be one of:
+    * t: `title` field of the note;
+    * g: `tag` field of the note;
+    * n: `notebook` field of the note;
+    * c: `created` field of the note;
+    * u: `updated` field of the note;
+    * a: all textx of a note;
+  Suffix (matching style) can be one of:
+    * b or B (before/after) for prefix 'created' or 'updated',
+    * Single or combination of the following items for prefix title/tag/notebook:
+      - i|I: ignore/unignore cases;
+      - w|W: whole/partial word match.
+  Examples:
+    `powershell`,
+    `t:powershell a:profile:w`,
+    `powershell a:PROFILE:I`,
+    `powershell a:PROFILE:I a:op:w`,
+    `powershell a:op:Iw`,
+    `cr:2021:B`,
+    `powershell up:2022-01-12:b`";
+
 fn parse_args() -> ArgMatches {
     command!()
         .bin_name("dn")
@@ -105,13 +128,13 @@ fn parse_args() -> ArgMatches {
                 .about("search pattern(s) in notes")
                 .arg(
                     Arg::new("patterns")
-                        .help("pattern(s) to be searched, e.g.: `cr:2021:B`, `cr:2022-01-12:b`")
+                        .help(SEARCH_HELP)
                         .action(ArgAction::Append),
                 ),
         )
         .subcommand(
             Command::new("sync")
-                .visible_alias("syn")
+                .visible_alias("y")
                 .about("sync (pull) notes from remote repo"),
         )
         .subcommand(
