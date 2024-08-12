@@ -298,7 +298,7 @@ fn build_search_term(ptn: &str) -> SearchTerm {
                 "n" => SearchItem::Notebook(String::from(elements[1])),
                 "c" => SearchItem::Created(parse_datetime(elements[1])),
                 "u" => SearchItem::Updated(parse_datetime(elements[1])),
-                _ => panic!("Invalid key name: {}", elements[0]),
+                _ => panic!("Invalid key name: {}, valid options: t/g/n/c/u", elements[0]),
             },
             flag: SearchFlag::Text(TextMatch {ignore_case: true, match_whole_word: false}),
         },
@@ -310,7 +310,7 @@ fn build_search_term(ptn: &str) -> SearchTerm {
                 "n" => SearchItem::Notebook(String::from(elements[1])),
                 "c" => SearchItem::Created(parse_datetime(elements[1])),
                 "u" => SearchItem::Updated(parse_datetime(elements[1])),
-                _ => panic!("Invalid key name: {}", elements[0]),
+                _ => panic!("Invalid key name: {}, valid options: t/g/n/c/u", elements[0]),
             },
             flag: match elements[2] {
                 "B" => SearchFlag::Time(false),
@@ -319,7 +319,7 @@ fn build_search_term(ptn: &str) -> SearchTerm {
                 "I" | "IW" | "WI" => SearchFlag::Text(TextMatch {ignore_case: false, match_whole_word: false}),
                 "iW" | "Wi" | "i" | "W" => SearchFlag::Text(TextMatch {ignore_case: true, match_whole_word: false}),
                 "Iw" | "wI" => SearchFlag::Text(TextMatch {ignore_case: false, match_whole_word: true}),
-                _ => panic!("Invalid flags: {}", elements[2]),
+                _ => panic!("Invalid flags: {}, valid options: b/B/w/W/i/I", elements[2]),
             },
         },
         _ => panic!("Bad search pattern format!")
