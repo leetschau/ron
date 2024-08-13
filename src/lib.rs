@@ -10,8 +10,9 @@ use config::{load_configs, print_config, set_config};
 use serde::{Serialize, Deserialize};
 use crate::config::Config;
 use std::collections::{BTreeMap, BTreeSet};
+use directories::BaseDirs;
 
-const TEMP_NOTE: &str = "/tmp/dsnote-tmp.md";
+const TEMP_NOTE: &str = "dsnote-tmp.md";
 const PATCH_PREFIX: &str = "/tmp/donno-patch";
 const PATCH_EXT: &str = "tgz";
 const CACHE_FILE: &str = ".notes-cache";
@@ -198,8 +199,8 @@ fn parse_datetime(datetime: &str) -> NaiveDateTime {
     NaiveDateTime::parse_from_str(fulldt.as_str(), "%Y-%m-%d %H:%M:%S").unwrap()
 }
 
-fn parse_note(inp: PathBuf) -> Result<Note, String> {
-    let raw: String = fs::read_to_string(&inp).expect("Reading file failed");
+fn parse_note(inp: &PathBuf) -> Result<Note, String> {
+    let raw: String = fs::read_to_string(inp).expect("Reading file failed");
     let mut lines = raw.lines();
 
     match lines.next() {
@@ -224,7 +225,7 @@ fn parse_note(inp: PathBuf) -> Result<Note, String> {
 
             let body: String = lines.skip(3).collect::<Vec<&str>>().join("\n");
 
-            Ok(Note { title, tags, notebook, created, updated, body, filepath: inp})
+            Ok(Note { title, tags, notebook, created, updated, body, filepath: inp.to_path_buf()})
         },
         None => Err(String::from(format!("Note {} is empty, parsing failed",
                     inp.to_string_lossy()))),
@@ -252,7 +253,7 @@ fn load_notes(repo_path: &PathBuf) -> Vec<Note> {
     let mut notes: Vec<Note> = Vec::new();
     for item in files {
         match item {
-            Ok(path) => match parse_note(path) {
+            Ok(path) => match parse_note(&path) {
                 Ok(note) => notes.push(note),
                 Err(msg) => println!("{:?}", msg)
             },
@@ -333,14 +334,15 @@ pub fn run(args: ArgMatches) {
             let now = Local::now().format("%F %T");
             let note_header: String = format!( "Title: \nTags: \nNotebook: {}\nCreated: {}\nUpdated: {}\n\n------\n\n",
                 confs.default_notebook, now, now);
-            fs::write(TEMP_NOTE, note_header).expect("Write note header failed!");
+            let cache_path: PathBuf = BaseDirs::new().unwrap().cache_dir().join(TEMP_NOTE);
+            fs::write(&cache_path, note_header).expect("Write note header failed!");
             SysCmd::new(confs.editor)
-                .arg(TEMP_NOTE)
+                .arg(&cache_path)
                 .spawn()
                 .expect("nvim met an error")
                 .wait()
                 .expect("Error: Editor returned a non-zero status");
-            match parse_note(PathBuf::from(TEMP_NOTE)) {
+            match parse_note(&cache_path) {
                 Ok(new_note) => {
                     let timestamp = Local::now().format("%y%m%d%H%M%S");
                     let note_rel_path = format!("{NOTE_PREFIX}{timestamp}.md");
@@ -439,7 +441,7 @@ pub fn run(args: ArgMatches) {
             let notes_dict: BTreeMap<u16, Note> = serde_pickle::from_slice(
                 &cache, Default::default()).unwrap();
             let target_path: &str = notes_dict[idx].filepath.to_str().unwrap();
-            match parse_note(PathBuf::from(target_path)) {
+            match parse_note(&PathBuf::from(target_path)) {
                 Ok(old_note) => {
                     let new_note = Note {
                         updated: Local::now().naive_local(),

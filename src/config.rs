@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::fs;
 use serde::{Serialize, Deserialize};
-use directories::{BaseDirs, ProjectDirs};
+use directories::BaseDirs;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
@@ -11,12 +11,12 @@ pub struct Config {
     pub viewer: String,
 }
 
-const CONF_FILE: &str = "config.json";
+const CONF_FILE: &str = "donno.json";
 
 pub fn load_configs() -> Config {
-    match ProjectDirs::from("me", "clouds", "donno") {
-        Some(project_dirs) => {
-            let config_path = project_dirs.config_dir();
+    match BaseDirs::new() {
+        Some(basedir) => {
+            let config_path = basedir.config_dir();
             let config_file_path = config_path.join(CONF_FILE);
             if Path::new(&config_file_path).exists() {
                 let raw = fs::read_to_string(config_file_path).expect("Unable to read file");
@@ -56,9 +56,9 @@ pub fn print_config(key: &str) {
 }
 
 pub fn save_configs(conf: Config) {
-    match ProjectDirs::from("me", "clouds", "donno") {
-        Some(project_dirs) => {
-            let config_path = project_dirs.config_dir();
+    match BaseDirs::new() {
+        Some(basedir) => {
+            let config_path = basedir.config_dir();
             let config_file_path = config_path.join(CONF_FILE);
             if !Path::new(&config_file_path).exists() {
                 match fs::create_dir_all(config_path) {
