@@ -123,23 +123,33 @@ async fn set_slot(
     on: Option<String>,
     checked: bool,
 ) -> ApiResult<Json<Pulse>> {
+    let pulse = set_slot_inner(&state, &id, on.as_deref(), checked).await?;
+    Ok(Json(pulse))
+}
+
+/// Shared by the JSON API and the viewer's form-based check/uncheck.
+pub async fn set_slot_inner(
+    state: &AppState,
+    id: &str,
+    on: Option<&str>,
+    checked: bool,
+) -> ApiResult<Pulse> {
     let mut pulse = {
         let conn = state.db();
-        db::get_pulse(&conn, &id)?.ok_or(ApiError::NotFound)?
+        db::get_pulse(&conn, id)?.ok_or(ApiError::NotFound)?
     };
     let slot = match on {
-        Some(s) => s,
+        Some(s) => s.to_string(),
         None => pulse.interval.current_slot(Local::now().naive_local()),
     };
-    // Sanity-check daily slots parse as a date; other intervals are strings.
     validate_slot(&pulse.interval, &slot)?;
     pulse.set_slot(slot, checked);
     {
         let conn = state.db();
         db::upsert_pulse(&conn, &pulse)?;
     }
-    persist_yaml(&state, crate::yaml::Item::Pulse(pulse.clone()))?;
-    Ok(Json(pulse))
+    persist_yaml(state, crate::yaml::Item::Pulse(pulse.clone()))?;
+    Ok(pulse)
 }
 
 fn validate_slot(interval: &Interval, slot: &str) -> ApiResult<()> {
