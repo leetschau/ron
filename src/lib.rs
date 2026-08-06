@@ -10,9 +10,15 @@ pub mod db;
 pub mod id;
 pub mod migrate;
 pub mod models;
+pub mod paths;
+pub mod server;
+pub mod token;
+pub mod viewer;
 pub mod yaml;
 
 pub use models::{Metric, Note, Pulse};
 
 /// Format version of the YAML on-disk files.
 pub const FORMAT_VERSION: u32 = yaml::FORMAT_VERSION;
+
+pub use paths::{Paths, ServerConfig};

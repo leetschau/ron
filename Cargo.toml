@@ -23,6 +23,15 @@ uuid = { version = "1.10", features = ["v4"] }
 directories = "5.0"
 anyhow = "1.0"
 thiserror = "1.0"
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+pulldown-cmark = "0.12"
+sha2 = "0.10"
+rand = "0.8"
+base64 = "0.22"
+html-escape = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 
 [dev-dependencies]
 tempfile = "3.10"
