@@ -13,6 +13,17 @@ pub enum Interval {
     Yearly,
 }
 
+impl std::fmt::Display for Interval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Interval::Daily => "daily",
+            Interval::Weekly => "weekly",
+            Interval::Monthly => "monthly",
+            Interval::Yearly => "yearly",
+        })
+    }
+}
+
 impl Interval {
     /// Slot key for a given date, e.g. `"2026-08-06"` for daily.
     /// Weekly keys use ISO week: `"2026-W32"`.

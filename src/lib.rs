@@ -6,7 +6,9 @@
 //! This crate exposes the data layer (models, DB, YAML, migration) so it can
 //! be exercised directly from tests or a CLI without going through HTTP.
 
+pub mod client;
 pub mod db;
+pub mod editor;
 pub mod id;
 pub mod migrate;
 pub mod models;
