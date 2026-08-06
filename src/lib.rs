@@ -9,6 +9,7 @@
 pub mod client;
 pub mod db;
 pub mod editor;
+pub mod git;
 pub mod id;
 pub mod migrate;
 pub mod models;

@@ -334,3 +334,44 @@ pub fn delete_metric(id: &str) -> Result<()> {
     }
     Ok(())
 }
+
+// ----- admin -----
+
+#[derive(Debug, Deserialize)]
+pub struct ExportReport {
+    pub notes: usize,
+    pub pulses: usize,
+    pub metrics: usize,
+    pub committed: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImportReport {
+    pub items: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SyncReport {
+    pub changed_files: Vec<String>,
+    pub items_loaded: usize,
+}
+
+pub fn export() -> Result<ExportReport> {
+    Api::post_json_reply("/api/export", &serde_json::json!({}))
+}
+
+pub fn import() -> Result<ImportReport> {
+    Api::post_json_reply("/api/import", &serde_json::json!({}))
+}
+
+pub fn backup() -> Result<()> {
+    let resp = Api::post_json("/api/backup", &serde_json::json!({}))?;
+    if !resp.status().is_success() {
+        return Err(anyhow!("backup failed: HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
+pub fn sync() -> Result<SyncReport> {
+    Api::post_json_reply("/api/sync", &serde_json::json!({}))
+}

@@ -43,4 +43,10 @@ impl From<rusqlite::Error> for ApiError {
     }
 }
 
+impl From<std::io::Error> for ApiError {
+    fn from(e: std::io::Error) -> Self {
+        ApiError::Internal(anyhow::anyhow!(e))
+    }
+}
+
 pub type ApiResult<T> = Result<T, ApiError>;

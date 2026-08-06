@@ -9,7 +9,7 @@
 //!     pulse-*.yaml
 //!     metric-*.yaml
 //! ~/.config/ron/
-//!   server.json              <- listen address + editor for CLI editing
+//!   server.json              <- listen address
 //!   tokens.json              <- bearer-token store (NOT committed to git)
 //! ```
 
@@ -59,23 +59,16 @@ impl Paths {
 pub struct ServerConfig {
     #[serde(default = "default_listen")]
     pub listen: String,
-    #[serde(default = "default_editor")]
-    pub editor: String,
 }
 
 fn default_listen() -> String {
     "127.0.0.1:7780".to_string()
 }
 
-fn default_editor() -> String {
-    "nvim".to_string()
-}
-
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             listen: default_listen(),
-            editor: default_editor(),
         }
     }
 }
@@ -112,20 +105,17 @@ mod tests {
         let path = dir.path().join("server.json");
         let cfg = ServerConfig {
             listen: "127.0.0.1:9000".into(),
-            editor: "code".into(),
         };
         std::fs::write(&path, serde_json::to_string(&cfg).unwrap()).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let back: ServerConfig = serde_json::from_str(&text).unwrap();
         assert_eq!(back.listen, "127.0.0.1:9000");
-        assert_eq!(back.editor, "code");
     }
 
     #[test]
     fn server_config_uses_defaults_when_partial() {
-        let text = "{\"editor\": \"vim\"}";
+        let text = "{}";
         let cfg: ServerConfig = serde_json::from_str(text).unwrap();
         assert_eq!(cfg.listen, "127.0.0.1:7780");
-        assert_eq!(cfg.editor, "vim");
     }
 }

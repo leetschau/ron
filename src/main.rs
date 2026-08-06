@@ -56,6 +56,10 @@ fn main() -> Result<()> {
         Some(("mstats", sub)) => metrics_cmd::stats(sub),
         Some(("mlist", _)) => metrics_cmd::list(),
         Some(("mdel", sub)) => metrics_cmd::delete(sub),
+        Some(("export", _)) => admin_cmd::export(),
+        Some(("import", _)) => admin_cmd::import(),
+        Some(("backup", _)) => admin_cmd::backup(),
+        Some(("sync", _)) => admin_cmd::sync(),
         _ => unreachable!("subcommand_required prevents None"),
     }
 }
@@ -216,6 +220,21 @@ fn parse_args() -> clap::ArgMatches {
         .subcommand(Command::new("mlist").about("list metrics"))
         .subcommand(
             Command::new("mdel").about("delete a metric").arg(Arg::new("id").required(true)),
+        )
+        // ---- admin ----
+        .subcommand(
+            Command::new("export")
+                .about("rewrite all YAML files from the DB; git add+commit"),
+        )
+        .subcommand(
+            Command::new("import").about("reload the DB from the YAML files on disk"),
+        )
+        .subcommand(
+            Command::new("backup").about("git push origin master (the repo must have a remote)"),
+        )
+        .subcommand(
+            Command::new("sync")
+                .about("git pull --ff-only origin master, then reload DB from YAML"),
         )
         .get_matches()
 }
@@ -648,6 +667,48 @@ mod metrics_cmd {
         let id = sub.get_one::<String>("id").unwrap().clone();
         client::delete_metric(&id)?;
         println!("deleted {id}");
+        Ok(())
+    }
+}
+
+// ----- admin commands -----
+
+mod admin_cmd {
+    use super::*;
+    use ron::client;
+
+    pub fn export() -> Result<()> {
+        let r = client::export()?;
+        println!(
+            "exported notes={} pulses={} metrics={} (committed={})",
+            r.notes, r.pulses, r.metrics, r.committed
+        );
+        Ok(())
+    }
+
+    pub fn import() -> Result<()> {
+        let r = client::import()?;
+        println!("imported {} items", r.items);
+        Ok(())
+    }
+
+    pub fn backup() -> Result<()> {
+        client::backup()?;
+        println!("pushed");
+        Ok(())
+    }
+
+    pub fn sync() -> Result<()> {
+        let r = client::sync()?;
+        if r.changed_files.is_empty() {
+            println!("up to date");
+        } else {
+            println!("changed files:");
+            for f in &r.changed_files {
+                println!("  {f}");
+            }
+        }
+        println!("loaded {} items", r.items_loaded);
         Ok(())
     }
 }

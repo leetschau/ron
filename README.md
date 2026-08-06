@@ -2,7 +2,103 @@
 
 Install: `cargo install --path .`
 
-Usage: `ron -h`
+## Usage
+
+ron is a server-client app: run the server once, then use the CLI (or a
+browser at `http://127.0.0.1:7780`) against it.
+
+### Start the server
+
+```
+ron serve
+```
+
+Listens on `127.0.0.1:7780` (override with `listen:` in
+`~/.config/ron/server.json`). Data lives under `~/.local/share/ron/`
+(SQLite + git repo of YAML); tokens under `~/.config/ron/`.
+
+### Auth
+
+The CLI authenticates with a bearer token it stores at
+`~/.config/ron/cli-token.json`. Mint one once per machine:
+
+```
+ron token grant my-laptop   # prints the secret once and saves it locally
+ron token list              # show token ids (no secrets)
+ron token revoke <id>
+```
+
+### Notes
+
+```
+ron add                       # open $EDITOR on a template; saves a new note
+ron list            [n]       # n most-recent notes (default 5)
+ron view            <id>      # print a note to stdout (cat-style)
+ron edit            <id>      # open $EDITOR on an existing note
+ron delete          <id>      # delete by ID (or 1-based index from list/search)
+ron search          [opts] PATTERN [PATTERN...]
+                              # scope prefix per pattern: t:/g:/n:/a:
+                              #   --field title|tags|notebook|content
+                              #   -C, --case       case-sensitive
+                              #   -w, --whole      whole-word match
+ron list-notebook             # unique notebooks
+ron relate          <id> <to...>   # add related note IDs to a note
+```
+
+`list`/`search` print the note ID in its own column so you can pass it to
+`view`/`edit`/`delete`/`relate`. You can also pass a 1-based index from the
+last listing instead of an ID.
+
+### Pulses (recurring boolean trackers)
+
+```
+ron padd     <topic>                  # --interval daily|weekly|monthly|yearly
+ron pcheck   <id>                     # mark today's slot met  (--on YYYY-MM-DD)
+ron puncheck <id>                     # mark unmet
+ron plist   [--active]                # list pulses (only today's open ones)
+ron pdel     <id>
+```
+
+### Metrics (free-form numeric time series)
+
+```
+ron madd    <topic>
+ron mlog    <id> <value> [--ts YYYY-MM-DDTHH:MM:SS]
+ron mstats  <id> [--from ...] [--to ...]   # count/mean/median/min/max
+ron mlist
+ron mdel    <id>
+```
+
+### Backup & sync
+
+The server owns a git repo at `~/.local/share/ron/repo`. Every write
+auto-commits the affected YAML file. To use backup/sync, point the repo at a
+remote once:
+
+```
+git -C ~/.local/share/ron/repo remote add origin <url>
+```
+
+Then:
+
+```
+ron export     # rewrite all YAML files from the DB (full reconcile)
+ron import     # reload the DB from the YAML files on disk
+ron backup     # git push origin master
+ron sync       # git pull --ff-only, then rebuild the DB
+```
+
+### Migrate from 1.x
+
+```
+ron migrate <old-notes-dir> <new-yaml-dir>
+# then move the new *.yaml files into ~/.local/share/ron/repo/ and run `ron import`
+```
+
+### Browser
+
+Open `http://127.0.0.1:7780/` for the notes index, and `/view/<note-id>` to
+read a rendered note (markdown + MathJax).
 
 ## Development
 

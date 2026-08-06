@@ -190,15 +190,30 @@ async fn delete(State(state): State<AppState>, Path(id): Path<String>) -> ApiRes
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-/// Write a single item's YAML file in the repo dir.
+/// Write a single item's YAML file in the repo dir, then commit it.
 pub fn persist_yaml(state: &AppState, item: yaml::Item) -> ApiResult<()> {
-    if let Err(e) = yaml::write_item(&state.inner.paths.repo_dir, &item) {
-        eprintln!("warning: yaml write failed: {e:#}");
+    let path = match yaml::write_item(&state.inner.paths.repo_dir, &item) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("warning: yaml write failed: {e:#}");
+            return Ok(());
+        }
+    };
+    if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+        let rel = name.to_string();
+        let msg = match &item {
+            yaml::Item::Note(n) => format!("note: {}: {}", n.id, summary(&n.title)),
+            yaml::Item::Pulse(p) => format!("pulse: {}: {}", p.id, summary(&p.topic)),
+            yaml::Item::Metric(m) => format!("metric: {}: {}", m.id, summary(&m.topic)),
+        };
+        if let Err(e) = crate::git::add_and_commit(&state.inner.paths.repo_dir, &[&rel], &msg) {
+            eprintln!("warning: git commit failed: {e:#}");
+        }
     }
     Ok(())
 }
 
-/// Remove a single item's YAML file by id.
+/// Remove a single item's YAML file by id, then commit the deletion.
 pub fn delete_yaml(state: &AppState, id: &str) -> ApiResult<()> {
     let path: PathBuf = state.inner.paths.repo_dir.join(format!("{id}.yaml"));
     if path.exists() {
@@ -206,7 +221,22 @@ pub fn delete_yaml(state: &AppState, id: &str) -> ApiResult<()> {
             eprintln!("warning: yaml delete failed {}: {e}", path.display());
         }
     }
+    let rel = format!("{id}.yaml");
+    if let Err(e) = crate::git::remove_and_commit(&state.inner.paths.repo_dir, &[&rel], &format!("delete: {id}")) {
+        eprintln!("warning: git rm/commit failed: {e:#}");
+    }
     Ok(())
+}
+
+fn summary(s: &str) -> String {
+    let t = s.trim();
+    if t.chars().count() <= 60 {
+        t.to_string()
+    } else {
+        let mut out: String = t.chars().take(59).collect();
+        out.push('…');
+        out
+    }
 }
 
 pub fn routes() -> axum::Router<AppState> {
