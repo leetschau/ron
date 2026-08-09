@@ -36,6 +36,10 @@ pub struct SearchParams {
     pub ignore_case: bool,
     #[serde(default)]
     pub whole_word: bool,
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub to: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -76,6 +80,9 @@ async fn search(
             db::NoteMatch {
                 ignore_case: p.ignore_case,
                 whole_word: p.whole_word,
+                from: p.from.as_deref().and_then(|s| db::parse_when(s, false)),
+                to: p.to.as_deref().and_then(|s| db::parse_when(s, true)),
+                order_by: None,
             },
         )?
     };

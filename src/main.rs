@@ -79,7 +79,19 @@ fn parse_args() -> clap::ArgMatches {
             Command::new("migrate")
                 .about("migrate notes from 1.x markdown to 2.x YAML")
                 .arg(Arg::new("src").required(true))
-                .arg(Arg::new("dst").required(true)),
+                .arg(Arg::new("dst").required(true))
+                .arg(
+                    Arg::new("fix-all")
+                        .long("fix-all")
+                        .action(ArgAction::SetTrue)
+                        .help("rewrite Created to the title's date for every mismatch (non-interactive)"),
+                )
+                .arg(
+                    Arg::new("keep-all")
+                        .long("keep-all")
+                        .action(ArgAction::SetTrue)
+                        .help("keep original Created on every mismatch (non-interactive)"),
+                ),
         )
         .subcommand(
             Command::new("token")
@@ -254,12 +266,28 @@ fn run_serve() -> Result<()> {
 fn run_migrate(sub: &clap::ArgMatches) -> Result<()> {
     let src: PathBuf = sub.get_one::<String>("src").unwrap().into();
     let dst: PathBuf = sub.get_one::<String>("dst").unwrap().into();
-    let report = ron::migrate::migrate_dir(&src, &dst);
+    let fix_all = *sub.get_one::<bool>("fix-all").unwrap_or(&false);
+    let keep_all = *sub.get_one::<bool>("keep-all").unwrap_or(&false);
+
+    let report = if fix_all {
+        ron::migrate::migrate_dir_with(&src, &dst, |_, _| ron::migrate::FixDecision::FixAll)
+    } else if keep_all {
+        ron::migrate::migrate_dir(&src, &dst)
+    } else {
+        ron::migrate::migrate_dir_with(&src, &dst, prompt_created_fix)
+    };
+
     if let Some(fatal) = report.fatal {
         eprintln!("fatal: {fatal}");
         std::process::exit(1);
     }
+    if report.aborted {
+        println!("aborted by user");
+    }
     println!("migrated {} note(s)", report.succeeded.len());
+    if report.fixed > 0 {
+        println!("fixed {} Created timestamp(s) from title dates", report.fixed);
+    }
     for (path, id) in &report.succeeded {
         println!("  {} -> {id}", path.display());
     }
@@ -273,6 +301,32 @@ fn run_migrate(sub: &clap::ArgMatches) -> Result<()> {
         eprintln!("{} file(s) skipped", report.skipped.len());
     }
     Ok(())
+}
+
+/// Ask the user whether to rewrite a note's `Created` to the date found in its
+/// title. Keys: y=yes, n=no, a=yes-for-all, s=skip-all, q=abort. On EOF /
+/// non-interactive stdin the safe default is "keep".
+fn prompt_created_fix(parsed: &ron::migrate::ParsedV1, title_date: chrono::NaiveDate) -> ron::migrate::FixDecision {
+    use std::io::{self, Write};
+    loop {
+        print!(
+            "  {:?}: title date {} != Created {}. Fix Created to {}? [y]es / [n]o / yes-to-[a]ll / [s]kip-all / [q]uit: ",
+            parsed.title, title_date, parsed.created.date(), title_date
+        );
+        let _ = io::stdout().flush();
+        let mut line = String::new();
+        if io::stdin().read_line(&mut line).unwrap_or(0) == 0 {
+            return ron::migrate::FixDecision::Keep; // EOF / non-tty: safe default
+        }
+        match line.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => return ron::migrate::FixDecision::Fix,
+            "n" | "no" => return ron::migrate::FixDecision::Keep,
+            "a" | "all" => return ron::migrate::FixDecision::FixAll,
+            "s" | "skip" => return ron::migrate::FixDecision::KeepAll,
+            "q" | "quit" | "abort" => return ron::migrate::FixDecision::Abort,
+            _ => eprintln!("    please answer y / n / a / s / q"),
+        }
+    }
 }
 
 fn run_token(sub: &clap::ArgMatches) -> Result<()> {

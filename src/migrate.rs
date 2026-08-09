@@ -18,7 +18,7 @@
 use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
-use chrono::{NaiveDateTime, TimeZone};
+use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
 
 use crate::id::{new_id_at, Kind};
 use crate::models::Note;
@@ -128,10 +128,95 @@ impl ParsedV1 {
     }
 }
 
+/// User's choice when a note's title date disagrees with its `Created` field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FixDecision {
+    /// Rewrite `Created` to the title's date for this note only.
+    Fix,
+    /// Keep the original `Created` for this note only.
+    Keep,
+    /// Rewrite `Created` for this and all remaining mismatches (no more prompts).
+    FixAll,
+    /// Keep originals for this and all remaining mismatches (no more prompts).
+    KeepAll,
+    /// Stop the migration immediately.
+    Abort,
+}
+
+#[derive(Clone, Copy)]
+enum PromptMode {
+    Ask,
+    FixAll,
+    KeepAll,
+}
+
+/// Extract the first `YYYY<sep>M<sep>D` date (sep ∈ {`.`, `/`, `-`}; M/D are
+/// 1–2 digits) found anywhere in `s`. Used to spot diary notes whose title
+/// carries the real date while `Created` holds a later bulk-import timestamp.
+/// Returns `None` when no valid calendar date is present.
+fn date_in_title(s: &str) -> Option<NaiveDate> {
+    let c: Vec<char> = s.chars().collect();
+    let n = c.len();
+    let mut i = 0;
+    while n >= i + 8 {
+        let is_year = c[i].is_ascii_digit()
+            && c[i + 1].is_ascii_digit()
+            && c[i + 2].is_ascii_digit()
+            && c[i + 3].is_ascii_digit();
+        if !is_year {
+            i += 1;
+            continue;
+        }
+        let year: i32 = c[i..i + 4].iter().collect::<String>().parse().ok()?;
+        let mut j = i + 4;
+        if j >= n || !matches!(c[j], '.' | '/' | '-') {
+            i += 1;
+            continue;
+        }
+        let sep = c[j];
+        j += 1;
+        let ms = j;
+        while j < n && c[j].is_ascii_digit() && j - ms < 2 {
+            j += 1;
+        }
+        if j == ms {
+            i += 1;
+            continue;
+        }
+        let month: u32 = c[ms..j].iter().collect::<String>().parse().ok()?;
+        if j >= n || c[j] != sep {
+            i += 1;
+            continue;
+        }
+        j += 1;
+        let ds = j;
+        while j < n && c[j].is_ascii_digit() && j - ds < 2 {
+            j += 1;
+        }
+        if j == ds {
+            i += 1;
+            continue;
+        }
+        let day: u32 = c[ds..j].iter().collect::<String>().parse().ok()?;
+        if let Some(d) = NaiveDate::from_ymd_opt(year, month, day) {
+            return Some(d);
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Migrate every `.md` file under `src_dir` into 2.x YAML files under
-/// `dst_dir`. Returns the count of successfully migrated notes.
-/// Files that fail to parse are reported but don't abort the batch.
-pub fn migrate_dir(src_dir: &Path, dst_dir: &Path) -> MigrateReport {
+/// `dst_dir`. When a note's title carries a date that disagrees with its
+/// `Created` field (common after a bulk import), `on_mismatch` is consulted to
+/// decide whether to rewrite `Created` to the title's date (preserving the
+/// original time-of-day). Once `FixAll`/`KeepAll` is returned, no further
+/// callbacks fire; `Abort` stops the batch immediately.
+pub fn migrate_dir_with(
+    src_dir: &Path,
+    dst_dir: &Path,
+    mut on_mismatch: impl FnMut(&ParsedV1, NaiveDate) -> FixDecision,
+) -> MigrateReport {
     let mut report = MigrateReport::default();
     if let Err(e) = std::fs::create_dir_all(dst_dir) {
         report.fatal = Some(format!("could not create {}: {e}", dst_dir.display()));
@@ -144,6 +229,7 @@ pub fn migrate_dir(src_dir: &Path, dst_dir: &Path) -> MigrateReport {
             return report;
         }
     };
+    let mut mode = PromptMode::Ask;
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("md") {
@@ -156,22 +242,62 @@ pub fn migrate_dir(src_dir: &Path, dst_dir: &Path) -> MigrateReport {
                 continue;
             }
         };
-        match parse_v1(&text) {
-            Ok(Some(parsed)) => {
-                // Generate a fresh v2 ID using the note's `created` time.
-                // V1 had no cross-references, so the old filename carries no
-                // information worth preserving.
-                let note = parsed.into_note(None);
-                match crate::yaml::write_item(dst_dir, &crate::yaml::Item::Note(note.clone())) {
-                    Ok(_) => report.succeeded.push((path, note.id)),
-                    Err(e) => report.failed.push((path, format!("write: {e:#}"))),
+        let mut parsed = match parse_v1(&text) {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                report.skipped.push(path);
+                continue;
+            }
+            Err(e) => {
+                report.failed.push((path, format!("parse: {e:#}")));
+                continue;
+            }
+        };
+        if let Some(title_date) = date_in_title(&parsed.title) {
+            if title_date != parsed.created.date() {
+                let fix = match mode {
+                    PromptMode::FixAll => true,
+                    PromptMode::KeepAll => false,
+                    PromptMode::Ask => match on_mismatch(&parsed, title_date) {
+                        FixDecision::Fix => true,
+                        FixDecision::Keep => false,
+                        FixDecision::FixAll => {
+                            mode = PromptMode::FixAll;
+                            true
+                        }
+                        FixDecision::KeepAll => {
+                            mode = PromptMode::KeepAll;
+                            false
+                        }
+                        FixDecision::Abort => {
+                            report.aborted = true;
+                            return report;
+                        }
+                    },
+                };
+                if fix {
+                    let c = parsed.created;
+                    parsed.created =
+                        title_date.and_hms_opt(c.hour(), c.minute(), c.second()).unwrap_or(title_date.and_hms_opt(0, 0, 0).unwrap());
+                    report.fixed += 1;
                 }
             }
-            Ok(None) => report.skipped.push(path),
-            Err(e) => report.failed.push((path, format!("parse: {e:#}"))),
+        }
+        // Generate a fresh v2 ID using the (possibly corrected) `created` time.
+        // V1 had no cross-references, so the old filename carries no
+        // information worth preserving.
+        let note = parsed.into_note(None);
+        match crate::yaml::write_item(dst_dir, &crate::yaml::Item::Note(note.clone())) {
+            Ok(_) => report.succeeded.push((path, note.id)),
+            Err(e) => report.failed.push((path, format!("write: {e:#}"))),
         }
     }
     report
+}
+
+/// Non-interactive migration: keeps the original `Created` on every mismatch.
+pub fn migrate_dir(src_dir: &Path, dst_dir: &Path) -> MigrateReport {
+    migrate_dir_with(src_dir, dst_dir, |_, _| FixDecision::KeepAll)
 }
 
 #[derive(Default, Debug)]
@@ -180,6 +306,10 @@ pub struct MigrateReport {
     pub failed: Vec<(std::path::PathBuf, String)>,
     pub skipped: Vec<std::path::PathBuf>,
     pub fatal: Option<String>,
+    /// Number of notes whose `Created` was rewritten to the title's date.
+    pub fixed: usize,
+    /// Set when the user chose to abort mid-batch.
+    pub aborted: bool,
 }
 
 #[cfg(test)]
@@ -252,5 +382,74 @@ mod tests {
             }
             _ => panic!("expected Note"),
         }
+    }
+
+    #[test]
+    fn date_in_title_finds_common_formats() {
+        assert_eq!(date_in_title("2017.10.8"), NaiveDate::from_ymd_opt(2017, 10, 8));
+        assert_eq!(date_in_title("2018-11-04"), NaiveDate::from_ymd_opt(2018, 11, 4));
+        assert_eq!(date_in_title("2018/11/4"), NaiveDate::from_ymd_opt(2018, 11, 4));
+        assert_eq!(date_in_title("trip 2018.11.4 notes"), NaiveDate::from_ymd_opt(2018, 11, 4));
+        assert_eq!(date_in_title("no date here"), None);
+        assert_eq!(date_in_title("2018.13.40"), None); // invalid month/day
+    }
+
+    fn v1_with(title: &str, created: &str) -> String {
+        format!(
+            "Title: {title}\nTags: \nNotebook: /Diary\nCreated: {created}\nUpdated: {created}\n\n------\n\ndiary\n"
+        )
+    }
+
+    #[test]
+    fn migrate_fixes_created_on_mismatch() {
+        let src = tempdir().unwrap();
+        let dst = tempdir().unwrap();
+        std::fs::write(src.path().join("a.md"), v1_with("2017.10.8", "2018-11-21 13:46:13")).unwrap();
+
+        let report = migrate_dir_with(src.path(), dst.path(), |_, _| FixDecision::FixAll);
+        assert!(!report.aborted);
+        assert_eq!(report.fixed, 1);
+        assert_eq!(report.succeeded.len(), 1);
+
+        match crate::yaml::read_all(dst.path()).unwrap().into_iter().next().unwrap() {
+            crate::yaml::Item::Note(n) => {
+                // Created moved to the title's date (time-of-day preserved).
+                assert_eq!(n.created, NaiveDate::from_ymd_opt(2017, 10, 8).unwrap().and_hms_opt(13, 46, 13).unwrap());
+                // Updated is left untouched.
+                assert_eq!(n.updated, NaiveDate::from_ymd_opt(2018, 11, 21).unwrap().and_hms_opt(13, 46, 13).unwrap());
+                // ID prefix now reflects the corrected date.
+                assert!(n.id.starts_with("note-20171008-1346-"), "id={}", n.id);
+            }
+            _ => panic!("expected Note"),
+        }
+    }
+
+    #[test]
+    fn migrate_keeps_created_when_asked() {
+        let src = tempdir().unwrap();
+        let dst = tempdir().unwrap();
+        std::fs::write(src.path().join("a.md"), v1_with("2017.10.8", "2018-11-21 13:46:13")).unwrap();
+
+        let report = migrate_dir_with(src.path(), dst.path(), |_, _| FixDecision::Keep);
+        assert_eq!(report.fixed, 0);
+        match crate::yaml::read_all(dst.path()).unwrap().into_iter().next().unwrap() {
+            crate::yaml::Item::Note(n) => {
+                assert_eq!(n.created, NaiveDate::from_ymd_opt(2018, 11, 21).unwrap().and_hms_opt(13, 46, 13).unwrap());
+                assert!(n.id.starts_with("note-20181121-1346-"));
+            }
+            _ => panic!("expected Note"),
+        }
+    }
+
+    #[test]
+    fn migrate_abort_stops_before_writing() {
+        let src = tempdir().unwrap();
+        let dst = tempdir().unwrap();
+        std::fs::write(src.path().join("a.md"), v1_with("2017.10.8", "2018-11-21 13:46:13")).unwrap();
+        std::fs::write(src.path().join("b.md"), v1_with("2018.3.1", "2018-11-21 13:46:13")).unwrap();
+
+        let report = migrate_dir_with(src.path(), dst.path(), |_, _| FixDecision::Abort);
+        assert!(report.aborted);
+        assert_eq!(report.succeeded.len(), 0); // aborted on first mismatch, before any write
     }
 }

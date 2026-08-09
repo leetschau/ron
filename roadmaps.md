@@ -17,7 +17,9 @@ On the server side, the REST API provides:
 The server owns the git repo. The whole dataset is exported into YAML files
 and committed into git by the server. SQLite is the working store; YAML files
 on disk are the source of truth on cold start / sync. The server rebuilds
-SQLite from YAML on `import`, and runs schema migrations during import.
+  SQLite from YAML on `import`, and runs schema migrations during import.
+  (TODO: no real schema-migration engine yet — `db::open` rejects a differing
+  `schema_version` instead of migrating.)
 
 Each note is stored as YAML with markdown body inside, so the markdown can be
 rendered (code blocks, MathJax) properly in view mode in the browser. The YAML
@@ -72,7 +74,8 @@ Storage: `Timeseries<f64>` (or `Timeseries<Value>` if non-numeric labels are
 needed later).
 
 On *review*, the app provides stats about that metric over a given time
-interval: average, median, histogram, line graph.
+interval: average, median, histogram, line graph. (TODO: only average and
+median are implemented; histogram and line graph are not.)
 
 ## Cleanup
 

@@ -28,9 +28,17 @@ pub async fn require_token(
     if path == "/api/tokens" || path.starts_with("/api/tokens/") {
         return Ok(next.run(req).await);
     }
-    // Browser-facing HTML routes are also exempt for P2. They are read-only
-    // views over the local dataset; auth for them can be layered on later.
-    if path == "/" || path.starts_with("/view/") || path.starts_with("/static/") {
+    // Browser-facing HTML routes are exempt: they rely on the server's
+    // localhost-only bind for security (per the roadmap). Covers the index,
+    // note view, search, pulses, and metrics pages plus their form POSTs.
+    let is_viewer = path == "/"
+        || path.starts_with("/view/")
+        || path.starts_with("/search")
+        || path.starts_with("/pulses")
+        || path.starts_with("/metrics")
+        || path == "/favicon.png"
+        || path.starts_with("/static/");
+    if is_viewer {
         return Ok(next.run(req).await);
     }
 

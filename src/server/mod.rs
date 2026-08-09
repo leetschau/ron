@@ -92,30 +92,37 @@ pub fn bootstrap_from_yaml(conn: &Connection, repo_dir: &std::path::Path) -> Res
         return Ok(());
     }
     let items = crate::yaml::read_all(repo_dir).unwrap_or_default();
+    if items.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
     for item in items {
         match item {
-            crate::yaml::Item::Note(n) => crate::db::upsert_note(conn, &n)?,
-            crate::yaml::Item::Pulse(p) => crate::db::upsert_pulse(conn, &p)?,
-            crate::yaml::Item::Metric(m) => crate::db::upsert_metric(conn, &m)?,
+            crate::yaml::Item::Note(n) => crate::db::upsert_note(&tx, &n)?,
+            crate::yaml::Item::Pulse(p) => crate::db::upsert_pulse(&tx, &p)?,
+            crate::yaml::Item::Metric(m) => crate::db::upsert_metric(&tx, &m)?,
         }
     }
+    tx.commit()?;
     Ok(())
 }
 
 /// Drop every row from every data table, then reload from YAML. Used by
 /// `import` and `sync` after the YAML has been refreshed from disk.
 pub fn rebuild_db_from_yaml(conn: &Connection, repo_dir: &std::path::Path) -> Result<usize> {
-    conn.execute("DELETE FROM notes", [])?;
-    conn.execute("DELETE FROM pulses", [])?;
-    conn.execute("DELETE FROM metrics", [])?;
     let items = crate::yaml::read_all(repo_dir).unwrap_or_default();
     let n = items.len();
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM notes", [])?;
+    tx.execute("DELETE FROM pulses", [])?;
+    tx.execute("DELETE FROM metrics", [])?;
     for item in items {
         match item {
-            crate::yaml::Item::Note(n) => crate::db::upsert_note(conn, &n)?,
-            crate::yaml::Item::Pulse(p) => crate::db::upsert_pulse(conn, &p)?,
-            crate::yaml::Item::Metric(m) => crate::db::upsert_metric(conn, &m)?,
+            crate::yaml::Item::Note(n) => crate::db::upsert_note(&tx, &n)?,
+            crate::yaml::Item::Pulse(p) => crate::db::upsert_pulse(&tx, &p)?,
+            crate::yaml::Item::Metric(m) => crate::db::upsert_metric(&tx, &m)?,
         }
     }
+    tx.commit()?;
     Ok(n)
 }

@@ -91,14 +91,23 @@ ron sync       # git pull --ff-only, then rebuild the DB
 ### Migrate from 1.x
 
 ```
-ron migrate <old-notes-dir> <new-yaml-dir>
+ron migrate <old-notes-dir> <new-yaml-dir>            # interactive: prompts on title/created mismatches
+ron migrate <old-notes-dir> <new-yaml-dir> --fix-all  # auto-fix all mismatches
+ron migrate <old-notes-dir> <new-yaml-dir> --keep-all # keep originals, no prompt
 # then move the new *.yaml files into ~/.local/share/ron/repo/ and run `ron import`
 ```
+
+When a note's title contains a date that differs from its `Created:` field
+(common after a bulk import), migrate offers to rewrite `Created` to the
+title's date. Options: `y` yes / `n` no / `a` yes-for-all / `s` skip-all /
+`q` quit.
 
 ### Browser
 
 Open `http://127.0.0.1:7780/` for the notes index, and `/view/<note-id>` to
-read a rendered note (markdown + MathJax).
+read a rendered note (markdown + MathJax). `/search` offers incremental
+full-text search plus advanced filters (field, case, whole-word, updated-time
+range, order, limit).
 
 ## Development
 

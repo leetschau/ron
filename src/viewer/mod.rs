@@ -13,6 +13,7 @@ use chrono::Local;
 use serde::Deserialize;
 
 use crate::db;
+use crate::models::Note;
 use crate::server::error::{ApiError, ApiResult};
 use crate::server::AppState;
 
@@ -53,6 +54,12 @@ const PAGE_HEAD: &str = r#"<!doctype html>
     .pill { display: inline-block; padding: 0 0.4em; border-radius: 10px;
             font-size: 0.8em; background: rgba(127,127,127,0.18); }
     .pill.done { background: rgba(40, 160, 80, 0.25); }
+    nav .nav-search { float: right; }
+    nav .nav-search input { font: inherit; padding: 0.1em 0.3em; }
+    #search-form { margin-bottom: 1rem; }
+    #search-form input[type=text],
+    #search-form select { font: inherit; }
+    #search-form label { white-space: nowrap; }
   </style>
   <script>
     MathJax = { tex: { inlineMath: [['$', '$'], ['\\(', '\\)']],
@@ -70,7 +77,9 @@ fn page(title: &str, body: &str) -> String {
          <a href=\"/\">notes</a>\
          <a href=\"/pulses\">pulses</a>\
          <a href=\"/metrics\">metrics</a>\
-         </nav>\n{body}{PAGE_FOOT}"
+         <form class=\"nav-search\" action=\"/search\" method=\"get\">\
+         <input name=\"q\" placeholder=\"search…\" aria-label=\"search notes\">\
+         </form></nav>\n{body}{PAGE_FOOT}"
     )
 }
 
@@ -79,27 +88,41 @@ async fn index(State(state): State<AppState>) -> ApiResult<Html<String>> {
         let conn = state.db();
         db::list_notes(&conn, Some(50))?
     };
-    let mut rows = String::new();
-    for n in &notes {
+    let body = format!("<h1>ron</h1>\n{}", render_results(&notes, None));
+    Ok(Html(page("ron", &body)))
+}
+
+/// Render notes as clickable rows. When `total` is given and exceeds the
+/// number of rows shown, a "showing N of M" note is emitted.
+fn render_results(notes: &[Note], total: Option<usize>) -> String {
+    if notes.is_empty() {
+        return "<p class=\"meta\">(no matches)</p>".into();
+    }
+    let header = match total {
+        Some(t) if t > notes.len() => format!("showing {} of {} note(s)", notes.len(), t),
+        Some(t) => format!("{} note(s)", t),
+        None => format!("{} note(s)", notes.len()),
+    };
+    let mut out = format!("<div class=\"meta\">{header}</div>");
+    for n in notes {
         let date = n.updated.format("%Y-%m-%d");
         let tags = n
             .tags
             .iter()
             .map(|t| format!("<span>{}</span>", html_escape::encode_text(t)))
             .collect::<String>();
-        rows.push_str(&format!(
+        out.push_str(&format!(
             "<div class=\"note-row\"><a href=\"/view/{id}\">{title}</a> \
-             <span class=\"meta\">{date}</span> <span class=\"tags\">{tags}</span></div>",
+             <span class=\"meta\">{date}</span> <span class=\"tags\">{tags}</span><br>\
+             <span class=\"meta\">{nb}</span></div>",
             id = html_escape::encode_text(&n.id),
             title = html_escape::encode_text(&n.title),
             date = date,
             tags = tags,
+            nb = html_escape::encode_text(&n.notebook),
         ));
     }
-    Ok(Html(page(
-        "ron",
-        &format!("<h1>ron</h1>\n{rows}"),
-    )))
+    out
 }
 
 async fn view_note(
@@ -329,11 +352,193 @@ async fn metric_detail(
     Ok(Html(page(&metric.topic, &body)).into_response())
 }
 
+// ----- search ----------------------------------------------------------------
+
+/// Global note search: incremental (full-text) + advanced (field, case,
+/// whole-word, updated-time range, order, limit). Driven by the shared
+/// `/search` route.
+#[derive(Debug, Default, Deserialize)]
+struct SearchParams {
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    field: Option<String>,
+    #[serde(default)]
+    ignore_case: Option<bool>,
+    #[serde(default)]
+    whole_word: Option<bool>,
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    to: Option<String>,
+    /// Sort key: updated (default) | created | title.
+    #[serde(default)]
+    order: Option<String>,
+    /// Max results to show (default 50).
+    #[serde(default)]
+    limit: Option<String>,
+    /// When truthy, return just the results fragment for live JS injection.
+    #[serde(default)]
+    partial: Option<String>,
+}
+
+fn field_from_str(s: &str) -> db::NoteField {
+    match s {
+        "title" => db::NoteField::Title,
+        "tags" => db::NoteField::Tags,
+        "notebook" => db::NoteField::Notebook,
+        _ => db::NoteField::Content,
+    }
+}
+
+fn order_from_str(s: &str) -> db::NoteOrder {
+    match s {
+        "created" => db::NoteOrder::Created,
+        "title" => db::NoteOrder::Title,
+        _ => db::NoteOrder::Updated,
+    }
+}
+
+async fn search_page(
+    State(state): State<AppState>,
+    Query(p): Query<SearchParams>,
+) -> ApiResult<Response> {
+    let field_str = p.field.clone().unwrap_or_else(|| "content".into());
+    let field = field_from_str(&field_str);
+    let ignore_case = p.ignore_case.unwrap_or(true);
+    let whole_word = p.whole_word.unwrap_or(false);
+    let from = p.from.as_deref().and_then(|s| db::parse_when(s, false));
+    let to = p.to.as_deref().and_then(|s| db::parse_when(s, true));
+    let order_str = p.order.clone().unwrap_or_else(|| "updated".into());
+    let order = order_from_str(&order_str);
+    let limit = p
+        .limit
+        .as_deref()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(50)
+        .clamp(1, 1000);
+
+    let rows = if p.q.trim().is_empty() {
+        "<p class=\"meta\">type to search notes…</p>".to_string()
+    } else {
+        let matches = {
+            let conn = state.db();
+            db::search_notes(
+                &conn,
+                field,
+                p.q.trim(),
+                db::NoteMatch {
+                    ignore_case,
+                    whole_word,
+                    from,
+                    to,
+                    order_by: Some(order),
+                },
+            )?
+        };
+        let total = matches.len();
+        let shown: Vec<Note> = matches.into_iter().take(limit).collect();
+        render_results(&shown, Some(total))
+    };
+
+    if matches!(p.partial.as_deref(), Some("1") | Some("true")) {
+        return Ok(Html(rows).into_response());
+    }
+    let body = search_body(
+        &p.q,
+        &field_str,
+        ignore_case,
+        whole_word,
+        p.from.as_deref(),
+        p.to.as_deref(),
+        &order_str,
+        limit,
+        &rows,
+    );
+    Ok(Html(page("search", &body)).into_response())
+}
+
+const SEARCH_JS: &str = r#"<script>
+(function () {
+  var form = document.getElementById('search-form');
+  var results = document.getElementById('results');
+  if (!form) return;
+  var t;
+  function live() {
+    var params = new URLSearchParams(new FormData(form));
+    params.set('partial', '1');
+    fetch('/search?' + params.toString())
+      .then(function (r) { return r.text(); })
+      .then(function (h) { results.innerHTML = h; });
+  }
+  form.addEventListener('input', function () { clearTimeout(t); t = setTimeout(live, 250); });
+  form.addEventListener('change', function () { clearTimeout(t); t = setTimeout(live, 120); });
+  form.addEventListener('submit', function (e) { e.preventDefault(); live(); });
+})();
+</script>"#;
+
+#[allow(clippy::too_many_arguments)]
+fn search_body(
+    q: &str,
+    field: &str,
+    ignore_case: bool,
+    whole_word: bool,
+    from: Option<&str>,
+    to: Option<&str>,
+    order: &str,
+    limit: usize,
+    rows: &str,
+) -> String {
+    let mk_opts = |opts: &[&str], current: &str| -> String {
+        opts.iter()
+            .map(|o| {
+                let sel = if *o == current { " selected" } else { "" };
+                format!("<option value=\"{o}\"{sel}>{o}</option>")
+            })
+            .collect()
+    };
+    let field_opts = mk_opts(&["content", "title", "tags", "notebook"], field);
+    let order_opts = mk_opts(&["updated", "created", "title"], order);
+    let case_checked = if !ignore_case { " checked" } else { "" };
+    let whole_checked = if whole_word { " checked" } else { "" };
+    let from_val = from.unwrap_or("");
+    let to_val = to.unwrap_or("");
+    format!(
+        r#"<h1>Search</h1>
+<form id="search-form" method="get" action="/search" autocomplete="off">
+  <input type="text" name="q" value="{q}" placeholder="query…" autofocus
+         style="width:50%;padding:0.2em 0.4em">
+  <select name="field">{field_opts}</select>
+  <label>order <select name="order">{order_opts}</select></label>
+  <label>limit <input type="number" name="limit" value="{limit}" min="1" max="1000" style="width:4em"></label>
+  <label><input type="checkbox" name="ignore_case" value="false"{case_checked}> case&nbsp;sensitive</label>
+  <label><input type="checkbox" name="whole_word" value="true"{whole_checked}> whole&nbsp;word</label>
+  <span class="meta">updated</span>
+  <input type="date" name="from" value="{from_val}">
+  - <input type="date" name="to" value="{to_val}">
+  <button type="submit">search</button>
+</form>
+<div id="results">{rows}</div>
+{js}"#,
+        q = html_escape::encode_double_quoted_attribute(q),
+        field_opts = field_opts,
+        order_opts = order_opts,
+        limit = limit,
+        case_checked = case_checked,
+        whole_checked = whole_checked,
+        from_val = html_escape::encode_double_quoted_attribute(from_val),
+        to_val = html_escape::encode_double_quoted_attribute(to_val),
+        rows = rows,
+        js = SEARCH_JS,
+    )
+}
+
 pub fn routes() -> axum::Router<AppState> {
     use axum::routing::{get, post};
     axum::Router::new()
         .route("/", get(index))
         .route("/view/:id", get(view_note))
+        .route("/search", get(search_page))
         .route("/pulses", get(pulses_index))
         .route("/pulses/:id/check", post(pulse_check))
         .route("/pulses/:id/uncheck", post(pulse_uncheck))

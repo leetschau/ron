@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use chrono::NaiveDateTime;
+use chrono::{NaiveDate, NaiveDateTime};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::models::{Interval, Metric, MetricPoint, Note, Pulse, PulseSlot};
@@ -200,6 +200,12 @@ pub fn list_notes(conn: &Connection, limit: Option<u32>) -> Result<Vec<Note>> {
 pub struct NoteMatch {
     pub ignore_case: bool,
     pub whole_word: bool,
+    /// Inclusive lower bound on `updated`.
+    pub from: Option<NaiveDateTime>,
+    /// Inclusive upper bound on `updated`.
+    pub to: Option<NaiveDateTime>,
+    /// Result ordering. `None` means newest-updated first.
+    pub order_by: Option<NoteOrder>,
 }
 
 impl Default for NoteMatch {
@@ -207,6 +213,9 @@ impl Default for NoteMatch {
         Self {
             ignore_case: true,
             whole_word: false,
+            from: None,
+            to: None,
+            order_by: None,
         }
     }
 }
@@ -218,6 +227,14 @@ pub enum NoteField {
     Tags,
     Notebook,
     Content, // title + tags + notebook + body
+}
+
+/// Sort key for search results.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoteOrder {
+    Updated, // newest first (desc)
+    Created, // newest first (desc)
+    Title,   // alphabetical, case-insensitive (asc)
 }
 
 /// In-memory search since SQLite FTS would be its own migration. For a
@@ -236,14 +253,25 @@ pub fn search_notes(
             s
         }
     };
-    let ptn = norm(pattern.to_string());
+    // Split the query into whitespace-delimited tokens; a note matches only
+    // when ALL tokens are present (AND semantics), so "linux python" finds
+    // notes containing both terms rather than the literal phrase.
+    let ptns: Vec<String> = pattern
+        .split_whitespace()
+        .map(|p| norm(p.to_string()))
+        .collect();
     let matches = |target: &str| -> bool {
-        let t = norm(target.to_string());
-        if opts.whole_word {
-            t.split_whitespace().any(|w| w == ptn)
-        } else {
-            t.contains(&ptn)
+        if ptns.is_empty() {
+            return false;
         }
+        let t = norm(target.to_string());
+        ptns.iter().all(|p| {
+            if opts.whole_word {
+                t.split_whitespace().any(|w| w == p)
+            } else {
+                t.contains(p)
+            }
+        })
     };
     let mut out = Vec::new();
     for n in all {
@@ -257,10 +285,47 @@ pub fn search_notes(
             }
         };
         if hit {
-            out.push(n);
+            let in_range = opts
+                .from
+                .map_or(true, |f| n.updated >= f)
+                && opts.to.map_or(true, |t| n.updated <= t);
+            if in_range {
+                out.push(n);
+            }
         }
     }
+    match opts.order_by.unwrap_or(NoteOrder::Updated) {
+        NoteOrder::Updated => out.sort_by(|a, b| b.updated.cmp(&a.updated).then(a.id.cmp(&b.id))),
+        NoteOrder::Created => out.sort_by(|a, b| b.created.cmp(&a.created).then(a.id.cmp(&b.id))),
+        NoteOrder::Title => out.sort_by(|a, b| {
+            a.title
+                .to_lowercase()
+                .cmp(&b.title.to_lowercase())
+                .then_with(|| a.id.cmp(&b.id))
+        }),
+    }
     Ok(out)
+}
+
+/// Parse a user-supplied date or datetime for range filtering. A bare date
+/// `YYYY-MM-DD` is expanded to start-of-day (`end_of_day == false`) or
+/// end-of-day (`true`); a full `YYYY-MM-DDTHH:MM:SS` is taken verbatim.
+/// Returns `None` for empty or unparseable input.
+pub fn parse_when(s: &str, end_of_day: bool) -> Option<NaiveDateTime> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Ok(dt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+        return Some(dt);
+    }
+    NaiveDate::parse_from_str(s, "%Y-%m-%d").ok().and_then(|d| {
+        if end_of_day {
+            d.and_hms_opt(23, 59, 59)
+        } else {
+            d.and_hms_opt(0, 0, 0)
+        }
+    })
 }
 
 // ----- Pulses ----------------------------------------------------------------
@@ -501,6 +566,95 @@ mod tests {
         let stats = back.stats(None, None).unwrap();
         assert!((stats.mean - 72.75).abs() < 1e-9);
         assert!(delete_metric(&conn, "m1").unwrap());
+    }
+
+    #[test]
+    fn search_notes_filters_by_time() {
+        let conn = conn();
+        let mk = |id: &str, ts: &str| {
+            Note::new(
+                id.into(),
+                "alpha".into(),
+                vec![],
+                "nb".into(),
+                ts.parse().unwrap(),
+                ts.parse().unwrap(),
+                "x".into(),
+            )
+        };
+        upsert_note(&conn, &mk("n1", "2026-01-01T00:00:00")).unwrap();
+        upsert_note(&conn, &mk("n2", "2026-06-01T00:00:00")).unwrap();
+        let opts = NoteMatch {
+            from: Some("2026-03-01T00:00:00".parse().unwrap()),
+            ..Default::default()
+        };
+        let hits = search_notes(&conn, NoteField::Content, "alpha", opts).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "n2");
+    }
+
+    #[test]
+    fn search_notes_orders_results() {
+        let conn = conn();
+        let mk = |id: &str, title: &str, created: &str, updated: &str| {
+            Note::new(
+                id.into(),
+                title.into(),
+                vec![],
+                "nb".into(),
+                created.parse().unwrap(),
+                updated.parse().unwrap(),
+                "alpha".into(),
+            )
+        };
+        upsert_note(&conn, &mk("n1", "Banana", "2026-01-01T00:00:00", "2026-06-01T00:00:00")).unwrap();
+        upsert_note(&conn, &mk("n2", "Apple", "2026-03-01T00:00:00", "2026-01-01T00:00:00")).unwrap();
+        upsert_note(&conn, &mk("n3", "Cherry", "2026-02-01T00:00:00", "2026-03-01T00:00:00")).unwrap();
+
+        let ids = |v: Vec<Note>| v.into_iter().map(|n| n.id).collect::<Vec<_>>();
+
+        let by_updated =
+            search_notes(&conn, NoteField::Content, "alpha", NoteMatch { order_by: Some(NoteOrder::Updated), ..Default::default() }).unwrap();
+        assert_eq!(ids(by_updated), vec!["n1", "n3", "n2"]); // jun, mar, jan
+
+        let by_created =
+            search_notes(&conn, NoteField::Content, "alpha", NoteMatch { order_by: Some(NoteOrder::Created), ..Default::default() }).unwrap();
+        assert_eq!(ids(by_created), vec!["n2", "n3", "n1"]); // mar, feb, jan
+
+        let by_title =
+            search_notes(&conn, NoteField::Content, "alpha", NoteMatch { order_by: Some(NoteOrder::Title), ..Default::default() }).unwrap();
+        assert_eq!(ids(by_title), vec!["n2", "n1", "n3"]); // Apple, Banana, Cherry
+    }
+
+    #[test]
+    fn search_notes_multiple_tokens_are_anded() {
+        let conn = conn();
+        let mk = |id: &str, title: &str, body: &str| {
+            Note::new(id.into(), title.into(), vec![], "nb".into(), now(), now(), body.into())
+        };
+        upsert_note(&conn, &mk("n1", "linux notes", "python scripting")).unwrap();
+        upsert_note(&conn, &mk("n2", "linux only", "nothing else")).unwrap();
+        upsert_note(&conn, &mk("n3", "other", "python and linux here")).unwrap();
+
+        let hits = search_notes(&conn, NoteField::Content, "linux python", NoteMatch::default()).unwrap();
+        let mut ids: Vec<String> = hits.into_iter().map(|n| n.id).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["n1".to_string(), "n3".to_string()]);
+
+        // a bare phrase that never co-occurs matches nothing
+        assert!(search_notes(&conn, NoteField::Content, "linux nomatch", NoteMatch::default()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_when_handles_date_and_datetime() {
+        assert_eq!(parse_when("2026-08-06", false), Some("2026-08-06T00:00:00".parse().unwrap()));
+        assert_eq!(parse_when("2026-08-06", true), Some("2026-08-06T23:59:59".parse().unwrap()));
+        assert_eq!(
+            parse_when("2026-08-06T12:00:00", true),
+            Some("2026-08-06T12:00:00".parse().unwrap())
+        );
+        assert_eq!(parse_when("", false), None);
+        assert_eq!(parse_when("garbage", false), None);
     }
 
     #[test]
