@@ -17,23 +17,35 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
             archive: ron-x86_64-linux.tar.gz
           - os: macos-latest
+            target: aarch64-apple-darwin
             archive: ron-aarch64-macos.tar.gz
           - os: windows-latest
+            target: x86_64-pc-windows-msvc
             archive: ron-x86_64-windows.zip
     steps:
       - uses: actions/checkout@v4
+      - name: Install musl tools (linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
       - name: Build release binary
-        run: cargo build --release
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --target ${{ matrix.target }}
       - name: Archive (unix)
         if: runner.os != 'Windows'
-        run: tar -czf ${{ matrix.archive }} -C target/release ron
+        run: tar -czf ${{ matrix.archive }} -C target/${{ matrix.target }}/release ron
       - name: Archive (windows)
         if: runner.os == 'Windows'
-        run: 7z a ${{ matrix.archive }} ./target/release/ron.exe
+        run: 7z a ${{ matrix.archive }} ./target/${{ matrix.target }}/release/ron.exe
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
