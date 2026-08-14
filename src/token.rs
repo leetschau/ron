@@ -1,13 +1,33 @@
-//! Bearer-token store.
+//! Bearer-token store: the server's record of API credentials.
+//!
+//! `~/.config/ron/tokens.json` is the server-side half of the API gate. It
+//! holds one entry per minted token: `{ id, label, hash, created }`. The
+//! `hash` is the SHA-256 hex of the raw secret — the raw secret is **never**
+//! persisted (only printed once to stdout at grant time, and stored as the
+//! client's `~/.config/ron/cli-token.json`). On every `/api/*` request the
+//! server re-hashes the presented `Authorization: Bearer <secret>` header and
+//! looks for a matching `hash` here (`auth::require_token`).
+//!
+//! It is distinct from the other two config files: `cli-token.json` (client
+//! side) holds the raw secret this machine sends as a header, while
+//! `server.json` holds the listen address and the browser-gate `viewer_secret`
+//! (a separate credential for the HTML routes — see `docs/phone-access.md`).
+//!
+//! The file lives under `~/.config/ron/`, deliberately **outside** the
+//! git-tracked `~/.local/share/ron/repo/`, so credentials are never committed
+//! or synced.
 //!
 //! Tokens are random 32-byte values encoded as URL-safe base64. The user sees
-//! the token exactly once at grant time; thereafter only its SHA-256 hash is
-//! stored on disk. Tokens live in `~/.config/ron/tokens.json`, not in the
-//! git-tracked dataset.
+//! the token exactly once at grant time; thereafter only its hash is kept.
 //!
-//! Token management endpoints (`grant`/`revoke`/`list`) don't require auth;
-//! they're reachable only because the server binds to localhost. All other
-//! endpoints require a valid bearer token.
+//! Token management endpoints (`grant`/`revoke`/`list`) don't require a bearer
+//! token — they bootstrap the first one. The mutating methods (POST
+//! `/api/tokens`, DELETE `/api/tokens/:id`) are instead restricted to loopback
+//! peers by `auth::require_token`, so that on a LAN-reachable server
+//! (`listen: 0.0.0.0:7780`) only the operator on the server's own host can
+//! mint or revoke a token. (GET `/api/tokens` exposes only ids/labels/created,
+//! never secrets, so it stays open.) All other endpoints require a valid
+//! bearer token.
 
 use std::fs;
 use std::path::Path;

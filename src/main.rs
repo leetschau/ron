@@ -4,9 +4,10 @@
 //!   - `serve`                            run the HTTP server
 //!   - `migrate <src> <dst>`              1.x -> 2.x YAML migration (P1)
 //!   - `token grant|list|revoke`          bearer-token management
+//!   - `viewer-key`                       print the viewer passphrase
 //!   - Notes:   add / edit / delete / view / list / search / relate
-//!   - Pulses:  padd / pcheck / puncheck / plist / pdel
-//!   - Metrics: madd / mlog / mstats / mlist / mdel
+//!   - Pulses:  padd / pcheck / puncheck / plist / pedit / pdel
+//!   - Metrics: madd / mlog / mstats / mlist / medit / mdel
 
 use std::path::PathBuf;
 
@@ -50,16 +51,19 @@ fn main() -> Result<()> {
         Some(("pcheck", sub)) => pulses_cmd::set_check(sub, true),
         Some(("puncheck", sub)) => pulses_cmd::set_check(sub, false),
         Some(("plist", sub)) => pulses_cmd::list(sub),
+        Some(("pedit", sub)) => pulses_cmd::edit(sub),
         Some(("pdel", sub)) => pulses_cmd::delete(sub),
         Some(("madd", sub)) => metrics_cmd::add(sub),
         Some(("mlog", sub)) => metrics_cmd::log(sub),
         Some(("mstats", sub)) => metrics_cmd::stats(sub),
         Some(("mlist", _)) => metrics_cmd::list(),
         Some(("mdel", sub)) => metrics_cmd::delete(sub),
+        Some(("medit", sub)) => metrics_cmd::edit(sub),
         Some(("export", _)) => admin_cmd::export(),
         Some(("import", _)) => admin_cmd::import(),
         Some(("backup", _)) => admin_cmd::backup(),
         Some(("sync", _)) => admin_cmd::sync(),
+        Some(("viewer-key", _)) => admin_cmd::viewer_key(),
         _ => unreachable!("subcommand_required prevents None"),
     }
 }
@@ -207,6 +211,18 @@ fn parse_args() -> clap::ArgMatches {
                 .arg(Arg::new("active").long("active").short('a').action(ArgAction::SetTrue)),
         )
         .subcommand(
+            Command::new("pedit")
+                .about("edit a pulse's topic and/or interval")
+                .arg(Arg::new("id").required(true))
+                .arg(Arg::new("topic").long("topic").short('t'))
+                .arg(
+                    Arg::new("interval")
+                        .long("interval")
+                        .short('i')
+                        .help("daily | weekly | monthly | yearly"),
+                ),
+        )
+        .subcommand(
             Command::new("pdel").about("delete a pulse").arg(Arg::new("id").required(true)),
         )
         // ---- metrics ----
@@ -233,6 +249,12 @@ fn parse_args() -> clap::ArgMatches {
         .subcommand(
             Command::new("mdel").about("delete a metric").arg(Arg::new("id").required(true)),
         )
+        .subcommand(
+            Command::new("medit")
+                .about("edit a metric's topic")
+                .arg(Arg::new("id").required(true))
+                .arg(Arg::new("topic").long("topic").short('t')),
+        )
         // ---- admin ----
         .subcommand(
             Command::new("export")
@@ -247,6 +269,10 @@ fn parse_args() -> clap::ArgMatches {
         .subcommand(
             Command::new("sync")
                 .about("git pull --ff-only origin master, then reload DB from YAML"),
+        )
+        .subcommand(
+            Command::new("viewer-key")
+                .about("print the configured viewer_secret (for the phone unlock URL/form)"),
         )
         .get_matches()
 }
@@ -660,6 +686,20 @@ mod pulses_cmd {
         Ok(())
     }
 
+    pub fn edit(sub: &clap::ArgMatches) -> Result<()> {
+        let id = sub.get_one::<String>("id").unwrap().clone();
+        let topic = sub.get_one::<String>("topic").cloned();
+        let interval = sub.get_one::<String>("interval").cloned();
+        if topic.is_none() && interval.is_none() {
+            return Err(anyhow!(
+                "pedit needs at least one of --topic or --interval (nothing to change)"
+            ));
+        }
+        let pulse = client::update_pulse(&id, topic, interval)?;
+        println!("updated {} ({}: {})", pulse.id, pulse.interval, pulse.topic);
+        Ok(())
+    }
+
     #[allow(dead_code)]
     fn _unused(_p: Pulse) {}
 }
@@ -723,6 +763,17 @@ mod metrics_cmd {
         println!("deleted {id}");
         Ok(())
     }
+
+    pub fn edit(sub: &clap::ArgMatches) -> Result<()> {
+        let id = sub.get_one::<String>("id").unwrap().clone();
+        let topic = sub.get_one::<String>("topic").cloned();
+        if topic.is_none() {
+            return Err(anyhow!("medit needs --topic (nothing to change)"));
+        }
+        let metric = client::update_metric(&id, topic)?;
+        println!("updated {} ({})", metric.id, metric.topic);
+        Ok(())
+    }
 }
 
 // ----- admin commands -----
@@ -764,5 +815,30 @@ mod admin_cmd {
         }
         println!("loaded {} items", r.items_loaded);
         Ok(())
+    }
+
+    /// Print the viewer passphrase (if any) from `~/.config/ron/server.json`.
+    /// Local file read only — no server contact, no token required.
+    pub fn viewer_key() -> Result<()> {
+        let paths = ron::Paths::detect()?;
+        let cfg = ron::ServerConfig::load(&paths)?;
+        match &cfg.viewer_secret {
+            Some(secret) => {
+                println!("{secret}");
+                println!(
+                    "(from {})",
+                    paths.server_config.display()
+                );
+                Ok(())
+            }
+            None => {
+                eprintln!(
+                    "no viewer_secret set in {}",
+                    paths.server_config.display()
+                );
+                eprintln!("add \"viewer_secret\": \"<passphrase>\" to enable the phone gate");
+                std::process::exit(1);
+            }
+        }
     }
 }

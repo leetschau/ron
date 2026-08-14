@@ -50,6 +50,12 @@ async fn create(
     State(state): State<AppState>,
     Json(body): Json<CreateBody>,
 ) -> ApiResult<(axum::http::StatusCode, Json<Pulse>)> {
+    let pulse = create_pulse_inner(&state, body).await?;
+    Ok((axum::http::StatusCode::CREATED, Json(pulse)))
+}
+
+/// Shared create logic (used by the JSON API and the viewer's create form).
+pub async fn create_pulse_inner(state: &AppState, body: CreateBody) -> ApiResult<Pulse> {
     if body.topic.trim().is_empty() {
         return Err(ApiError::BadRequest("topic must not be empty".into()));
     }
@@ -59,8 +65,8 @@ async fn create(
         let conn = state.db();
         db::upsert_pulse(&conn, &pulse)?;
     }
-    persist_yaml(&state, crate::yaml::Item::Pulse(pulse.clone()))?;
-    Ok((axum::http::StatusCode::CREATED, Json(pulse)))
+    persist_yaml(state, crate::yaml::Item::Pulse(pulse.clone()))?;
+    Ok(pulse)
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,9 +80,19 @@ async fn update(
     Path(id): Path<String>,
     Json(body): Json<UpdateBody>,
 ) -> ApiResult<Json<Pulse>> {
+    let pulse = update_pulse_inner(&state, &id, body).await?;
+    Ok(Json(pulse))
+}
+
+/// Shared update logic (used by the JSON API and the viewer's edit form).
+pub async fn update_pulse_inner(
+    state: &AppState,
+    id: &str,
+    body: UpdateBody,
+) -> ApiResult<Pulse> {
     let mut pulse = {
         let conn = state.db();
-        db::get_pulse(&conn, &id)?.ok_or(ApiError::NotFound)?
+        db::get_pulse(&conn, id)?.ok_or(ApiError::NotFound)?
     };
     if let Some(t) = body.topic {
         if t.trim().is_empty() {
@@ -91,8 +107,8 @@ async fn update(
         let conn = state.db();
         db::upsert_pulse(&conn, &pulse)?;
     }
-    persist_yaml(&state, crate::yaml::Item::Pulse(pulse.clone()))?;
-    Ok(Json(pulse))
+    persist_yaml(state, crate::yaml::Item::Pulse(pulse.clone()))?;
+    Ok(pulse)
 }
 
 #[derive(Debug, Deserialize)]
@@ -174,15 +190,23 @@ async fn delete(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let removed = {
-        let conn = state.db();
-        db::delete_pulse(&conn, &id)?
-    };
+    let removed = delete_pulse_inner(&state, &id).await?;
     if !removed {
         return Err(ApiError::NotFound);
     }
-    delete_yaml(&state, &id)?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// Shared delete logic (used by the JSON API and the viewer's delete form).
+pub async fn delete_pulse_inner(state: &AppState, id: &str) -> ApiResult<bool> {
+    let removed = {
+        let conn = state.db();
+        db::delete_pulse(&conn, id)?
+    };
+    if removed {
+        delete_yaml(state, id)?;
+    }
+    Ok(removed)
 }
 
 #[allow(dead_code)]

@@ -59,16 +59,26 @@ impl Paths {
 pub struct ServerConfig {
     #[serde(default = "default_listen")]
     pub listen: String,
+    /// Optional shared passphrase gating the browser viewer. When `None`,
+    /// viewer routes stay open (the historical localhost-bind behaviour).
+    /// When `Some`, viewer routes require a `ron_viewer` cookie obtained via
+    /// `/?key=<secret>` or the `/login` form. See docs/phone-access.md.
+    #[serde(default)]
+    pub viewer_secret: Option<String>,
 }
 
 fn default_listen() -> String {
-    "127.0.0.1:7780".to_string()
+    // Bind on all interfaces so a phone (or a remote CLI host) on the LAN can
+    // reach the server. The viewer gate (`viewer_secret`) and loopback-only
+    // `/api/tokens` keep the surfaces protected; see docs/phone-access.md.
+    "0.0.0.0:7780".to_string()
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             listen: default_listen(),
+            viewer_secret: None,
         }
     }
 }
@@ -105,17 +115,20 @@ mod tests {
         let path = dir.path().join("server.json");
         let cfg = ServerConfig {
             listen: "127.0.0.1:9000".into(),
+            viewer_secret: Some("hush".into()),
         };
         std::fs::write(&path, serde_json::to_string(&cfg).unwrap()).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let back: ServerConfig = serde_json::from_str(&text).unwrap();
         assert_eq!(back.listen, "127.0.0.1:9000");
+        assert_eq!(back.viewer_secret.as_deref(), Some("hush"));
     }
 
     #[test]
     fn server_config_uses_defaults_when_partial() {
         let text = "{}";
         let cfg: ServerConfig = serde_json::from_str(text).unwrap();
-        assert_eq!(cfg.listen, "127.0.0.1:7780");
+        assert_eq!(cfg.listen, "0.0.0.0:7780");
+        assert!(cfg.viewer_secret.is_none());
     }
 }

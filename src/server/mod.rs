@@ -27,10 +27,13 @@ pub struct Inner {
     pub paths: Paths,
     pub db: std::sync::Mutex<Connection>,
     pub tokens: std::sync::RwLock<TokenStore>,
+    /// Optional passphrase gating the browser viewer. `None` = open viewer
+    /// (historical behaviour); `Some` = cookie-gated. See docs/phone-access.md.
+    pub viewer_secret: Option<String>,
 }
 
 impl AppState {
-    pub fn new(paths: Paths) -> Result<Self> {
+    pub fn new(paths: Paths, viewer_secret: Option<String>) -> Result<Self> {
         // Ensure the git repo exists before opening the DB; .gitignore below
         // keeps the SQLite store (which lives *outside* the repo anyway) from
         // being tracked if it's ever moved in.
@@ -46,6 +49,7 @@ impl AppState {
                 paths,
                 db: std::sync::Mutex::new(conn),
                 tokens: std::sync::RwLock::new(TokenStore::default()),
+                viewer_secret,
             }),
         })
     }

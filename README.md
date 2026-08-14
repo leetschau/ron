@@ -5,7 +5,7 @@ Install: `cargo install --path .`
 ## Usage
 
 ron is a server-client app: run the server once, then use the CLI (or a
-browser at `http://127.0.0.1:7780`) against it.
+browser at `http://<host>:7780`) against it.
 
 ### Start the server
 
@@ -13,9 +13,32 @@ browser at `http://127.0.0.1:7780`) against it.
 ron serve
 ```
 
-Listens on `127.0.0.1:7780` (override with `listen:` in
-`~/.config/ron/server.json`). Data lives under `~/.local/share/ron/`
-(SQLite + git repo of YAML); tokens under `~/.config/ron/`.
+Listens on `0.0.0.0:7780` (override with `listen:` in
+`~/.config/ron/server.json`) so a phone or a second machine on the LAN can
+reach it. Data lives under `~/.local/share/ron/` (SQLite + git repo of YAML);
+tokens under `~/.config/ron/`. See [docs/configuration.md](docs/configuration.md)
+for a complete reference of every config and data file.
+
+### Phone / browser access
+
+Open `http://<server-lan-ip>:7780/` in a browser. The viewer lets you read
+**and** write notes, pulses, and metrics (create / edit / delete forms).
+
+By default the viewer is open to anyone who can reach the port. To gate it,
+add a passphrase to `~/.config/ron/server.json`:
+
+```json
+{ "listen": "0.0.0.0:7780", "viewer_secret": "your-passphrase" }
+```
+
+Then on the phone either:
+
+- visit `http://<server-lan-ip>:7780/?key=your-passphrase` once (sets a
+  30-day cookie, redirects to `/`), or
+- open `http://<server-lan-ip>:7780/login` and type the passphrase.
+
+Print the configured passphrase any time with `ron viewer-key`. See
+[docs/phone-access.md](docs/phone-access.md) for the full security model.
 
 ### Auth
 
@@ -27,6 +50,12 @@ ron token grant my-laptop   # prints the secret once and saves it locally
 ron token list              # show token ids (no secrets)
 ron token revoke <id>
 ```
+
+`POST /api/tokens` and `DELETE /api/tokens/:id` are restricted to loopback
+peers, so a token can only be minted on the server's own host. To use the CLI
+from a **second machine** on the LAN: run `ron token grant <label>` on the
+server host, copy `~/.config/ron/cli-token.json` to the remote machine, and
+`export RON_URL=http://<server-lan-ip>:7780` there.
 
 ### Notes
 
@@ -47,7 +76,8 @@ ron relate          <id> <to...>   # add related note IDs to a note
 
 `list`/`search` print the note ID in its own column so you can pass it to
 `view`/`edit`/`delete`/`relate`. You can also pass a 1-based index from the
-last listing instead of an ID.
+last listing instead of an ID. From the browser, use the `+ new` link, and
+the edit/delete actions on each note.
 
 ### Pulses (recurring boolean trackers)
 
@@ -56,8 +86,12 @@ ron padd     <topic>                  # --interval daily|weekly|monthly|yearly
 ron pcheck   <id>                     # mark today's slot met  (--on YYYY-MM-DD)
 ron puncheck <id>                     # mark unmet
 ron plist   [--active]                # list pulses (only today's open ones)
+ron pedit     <id> [--topic ...] [--interval daily|weekly|monthly|yearly]
 ron pdel     <id>
 ```
+
+The browser `/pulses` page has a create form, per-row check/uncheck,
+edit, and delete.
 
 ### Metrics (free-form numeric time series)
 
@@ -66,8 +100,12 @@ ron madd    <topic>
 ron mlog    <id> <value> [--ts YYYY-MM-DDTHH:MM:SS]
 ron mstats  <id> [--from ...] [--to ...]   # count/mean/median/min/max
 ron mlist
+ron medit   <id> [--topic ...]
 ron mdel    <id>
 ```
+
+The browser `/metrics` page and each `/metrics/<id>` detail page offer
+create, log-value, edit-topic, and delete forms.
 
 ### Backup & sync
 
@@ -119,6 +157,25 @@ cargo run -- s key1 key2 ...
 cargo test
 cargo build
 cargo build --release
-cp target/release/ron ~/.local/bin/dn
 ```
+
+### Static binary (portable across Linux hosts)
+
+A plain `cargo build --release` links against the build host's libc. Under
+Nix that means the binary's ELF interpreter points into `/nix/store/...`,
+so it only runs on that machine (executing it elsewhere fails with
+"Check the interpreter or linker?"). To get a fully static, portable
+Linux binary, build for the musl target:
+
+```
+# from the GitHub release (CI builds static musl binaries):
+#   https://github.com/<you>/ron/releases  ->  ron-x86_64-linux.tar.gz
+
+# or locally via the Nix devshell (flakes the musl toolchain):
+nix develop --command cargo build --release --target x86_64-unknown-linux-musl
+cp target/x86_64-unknown-linux-musl/release/ron ~/.local/bin/ron
+```
+
+Note the output lives under `target/<triple>/release/`, not
+`target/release/` — copying the wrong one is an easy mistake.
 

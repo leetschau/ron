@@ -34,6 +34,12 @@ async fn create(
     State(state): State<AppState>,
     Json(body): Json<CreateBody>,
 ) -> ApiResult<(axum::http::StatusCode, Json<Metric>)> {
+    let metric = create_metric_inner(&state, body).await?;
+    Ok((axum::http::StatusCode::CREATED, Json(metric)))
+}
+
+/// Shared create logic (used by the JSON API and the viewer's create form).
+pub async fn create_metric_inner(state: &AppState, body: CreateBody) -> ApiResult<Metric> {
     if body.topic.trim().is_empty() {
         return Err(ApiError::BadRequest("topic must not be empty".into()));
     }
@@ -43,8 +49,8 @@ async fn create(
         let conn = state.db();
         db::upsert_metric(&conn, &metric)?;
     }
-    persist_yaml(&state, crate::yaml::Item::Metric(metric.clone()))?;
-    Ok((axum::http::StatusCode::CREATED, Json(metric)))
+    persist_yaml(state, crate::yaml::Item::Metric(metric.clone()))?;
+    Ok(metric)
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -57,9 +63,19 @@ async fn update(
     Path(id): Path<String>,
     Json(body): Json<UpdateBody>,
 ) -> ApiResult<Json<Metric>> {
+    let metric = update_metric_inner(&state, &id, body).await?;
+    Ok(Json(metric))
+}
+
+/// Shared update logic (used by the JSON API and the viewer's edit form).
+pub async fn update_metric_inner(
+    state: &AppState,
+    id: &str,
+    body: UpdateBody,
+) -> ApiResult<Metric> {
     let mut metric = {
         let conn = state.db();
-        db::get_metric(&conn, &id)?.ok_or(ApiError::NotFound)?
+        db::get_metric(&conn, id)?.ok_or(ApiError::NotFound)?
     };
     if let Some(t) = body.topic {
         if t.trim().is_empty() {
@@ -71,8 +87,8 @@ async fn update(
         let conn = state.db();
         db::upsert_metric(&conn, &metric)?;
     }
-    persist_yaml(&state, crate::yaml::Item::Metric(metric.clone()))?;
-    Ok(Json(metric))
+    persist_yaml(state, crate::yaml::Item::Metric(metric.clone()))?;
+    Ok(metric)
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -86,9 +102,19 @@ async fn append_point(
     Path(id): Path<String>,
     Json(body): Json<AppendBody>,
 ) -> ApiResult<Json<Metric>> {
+    let metric = append_point_inner(&state, &id, body).await?;
+    Ok(Json(metric))
+}
+
+/// Shared append logic (used by the JSON API and the viewer's log form).
+pub async fn append_point_inner(
+    state: &AppState,
+    id: &str,
+    body: AppendBody,
+) -> ApiResult<Metric> {
     let mut metric = {
         let conn = state.db();
-        db::get_metric(&conn, &id)?.ok_or(ApiError::NotFound)?
+        db::get_metric(&conn, id)?.ok_or(ApiError::NotFound)?
     };
     let ts = body.ts.unwrap_or_else(|| Local::now().naive_local());
     metric.append(ts, body.value);
@@ -96,8 +122,8 @@ async fn append_point(
         let conn = state.db();
         db::upsert_metric(&conn, &metric)?;
     }
-    persist_yaml(&state, crate::yaml::Item::Metric(metric.clone()))?;
-    Ok(Json(metric))
+    persist_yaml(state, crate::yaml::Item::Metric(metric.clone()))?;
+    Ok(metric)
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -151,15 +177,23 @@ async fn delete(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let removed = {
-        let conn = state.db();
-        db::delete_metric(&conn, &id)?
-    };
+    let removed = delete_metric_inner(&state, &id).await?;
     if !removed {
         return Err(ApiError::NotFound);
     }
-    delete_yaml(&state, &id)?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// Shared delete logic (used by the JSON API and the viewer's delete form).
+pub async fn delete_metric_inner(state: &AppState, id: &str) -> ApiResult<bool> {
+    let removed = {
+        let conn = state.db();
+        db::delete_metric(&conn, id)?
+    };
+    if removed {
+        delete_yaml(state, id)?;
+    }
+    Ok(removed)
 }
 
 pub fn routes() -> axum::Router<AppState> {

@@ -6,7 +6,7 @@
 
 pub mod render;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Form, Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use chrono::Local;
@@ -75,6 +75,7 @@ fn page(title: &str, body: &str) -> String {
     format!(
         "{PAGE_HEAD}<!-- {title} -->\n<nav>\
          <a href=\"/\">notes</a>\
+         <a href=\"/notes/new\">+ new</a>\
          <a href=\"/pulses\">pulses</a>\
          <a href=\"/metrics\">metrics</a>\
          <form class=\"nav-search\" action=\"/search\" method=\"get\">\
@@ -161,7 +162,14 @@ async fn view_note(
         "<h1>{title}</h1>\n{meta}\n{related}\n<div class=\"tags\">{tags}</div>\n<div class=\"body\">{html_body}</div>",
         title = html_escape::encode_text(&note.title),
     );
-    Ok(Html(page(&note.title, &body)).into_response())
+    let actions = format!(
+        "<div class=\"meta\" style=\"margin-top:1.5rem\">\
+         <a href=\"/notes/{id}/edit\">edit</a> · \
+         <form method=\"post\" action=\"/notes/{id}/delete\" onsubmit=\"return confirm('delete this note?')\">\
+         <button class=\"uncheck\">delete</button></form></div>",
+        id = html_escape::encode_text(&note.id),
+    );
+    Ok(Html(page(&note.title, &format!("{body}\n{actions}"))).into_response())
 }
 
 async fn favicon() -> Response {
@@ -170,6 +178,142 @@ async fn favicon() -> Response {
         axum::http::HeaderValue::from_static("image/png"),
     )])
         .into_response()
+}
+
+// ----- notes write (create / edit / delete) ---------------------------------
+
+#[derive(Debug, serde::Deserialize)]
+struct NoteForm {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    tags: String,
+    #[serde(default)]
+    notebook: String,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    related: String,
+}
+
+impl NoteForm {
+    fn tags_vec(&self) -> Vec<String> {
+        split_semi(&self.tags)
+    }
+    fn related_vec(&self) -> Vec<String> {
+        split_semi(&self.related)
+    }
+}
+
+/// Split a tag/related string on `;` or `,`, trimming and dropping empties.
+fn split_semi(s: &str) -> Vec<String> {
+    s.split([';', ','])
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+/// Render the shared note form. `action` is the POST target; submit_label is
+/// the button text ("create" or "save").
+fn note_form_html(
+    action: &str,
+    title: &str,
+    tags: &str,
+    notebook: &str,
+    related: &str,
+    body: &str,
+    submit_label: &str,
+) -> String {
+    format!(
+        r#"<form method="post" action="{action}">
+  <label>title<br><input name="title" value="{title}" style="width:100%;padding:0.3em"></label><br>
+  <label>tags<br><input name="tags" value="{tags}" placeholder="semicolon-separated" style="width:100%;padding:0.3em"></label><br>
+  <label>notebook<br><input name="notebook" value="{notebook}" style="width:100%;padding:0.3em"></label><br>
+  <label>related<br><input name="related" value="{related}" placeholder="related note IDs, semicolon-separated" style="width:100%;padding:0.3em"></label><br>
+  body<br><textarea name="body" rows="22" style="width:100%;font-family:monospace;padding:0.3em">{body}</textarea><br>
+  <button type="submit" style="padding:0.3em 0.8em;margin-top:0.4em">{submit_label}</button>
+</form>"#,
+        action = html_escape::encode_double_quoted_attribute(action),
+        title = html_escape::encode_double_quoted_attribute(title),
+        tags = html_escape::encode_double_quoted_attribute(tags),
+        notebook = html_escape::encode_double_quoted_attribute(notebook),
+        related = html_escape::encode_double_quoted_attribute(related),
+        body = html_escape::encode_text(body),
+        submit_label = submit_label,
+    )
+}
+
+async fn note_new_get() -> ApiResult<Html<String>> {
+    let form = note_form_html("/notes/new", "", "", "default", "", "", "create");
+    let body = format!("<h1>New note</h1>\n{form}");
+    Ok(Html(page("new note", &body)))
+}
+
+async fn note_new_post(
+    State(state): State<AppState>,
+    Form(form): Form<NoteForm>,
+) -> ApiResult<Response> {
+    let tags = form.tags_vec();
+    let related = form.related_vec();
+    let body = crate::server::notes::CreateBody {
+        title: form.title,
+        tags,
+        notebook: form.notebook,
+        body: form.body,
+        related,
+    };
+    let note = crate::server::notes::create_note_inner(&state, body).await?;
+    Ok(Redirect::to(&format!("/view/{}", note.id)).into_response())
+}
+
+async fn note_edit_get(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    let note = {
+        let conn = state.db();
+        db::get_note(&conn, &id)?.ok_or(ApiError::NotFound)?
+    };
+    let form = note_form_html(
+        &format!("/notes/{id}/edit"),
+        &note.title,
+        &note.tags.join("; "),
+        &note.notebook,
+        &note.related.join("; "),
+        &note.body,
+        "save",
+    );
+    let body = format!(
+        "<h1>Edit note</h1>\n<div class=\"meta\">id <code>{id}</code></div>\n{form}",
+        id = html_escape::encode_text(&note.id),
+    );
+    Ok(Html(page("edit note", &body)).into_response())
+}
+
+async fn note_edit_post(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Form(form): Form<NoteForm>,
+) -> ApiResult<Response> {
+    let tags = form.tags_vec();
+    let related = form.related_vec();
+    let body = crate::server::notes::UpdateBody {
+        title: Some(form.title),
+        tags: Some(tags),
+        notebook: Some(form.notebook),
+        body: Some(form.body),
+        related: Some(related),
+    };
+    let note = crate::server::notes::update_note_inner(&state, &id, body).await?;
+    Ok(Redirect::to(&format!("/view/{}", note.id)).into_response())
+}
+
+async fn note_delete_post(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    let _ = crate::server::notes::delete_note_inner(&state, &id).await?;
+    Ok(Redirect::to("/").into_response())
 }
 
 // ----- pulses ----------------------------------------------------------------
@@ -197,14 +341,15 @@ async fn pulses_index(
     let mut body = String::new();
     body.push_str("<h1>Pulses</h1>\n");
     body.push_str(&format!(
-        "<div class=\"meta\"><a href=\"/pulses\">all</a> · <a href=\"/pulses?active=true\">today's open</a> · use <code>ron padd ...</code> to add</div>\n"
+        "<div class=\"meta\"><a href=\"/pulses\">all</a> · <a href=\"/pulses?active=true\">today's open</a></div>\n"
     ));
+    body.push_str(&pulse_create_form(None));
     if shown.is_empty() {
         body.push_str("<p>(none)</p>");
         return Ok(Html(page("pulses", &body)));
     }
 
-    body.push_str("<table><thead><tr><th align=\"left\">topic</th><th>interval</th><th>today</th><th>last 7</th></tr></thead><tbody>");
+    body.push_str("<table><thead><tr><th align=\"left\">topic</th><th>interval</th><th>today</th><th>last 7</th><th>actions</th></tr></thead><tbody>");
     for p in shown {
         let today = p.interval.current_slot(now);
         let done = p.get_slot(&today).unwrap_or(false);
@@ -222,17 +367,59 @@ async fn pulses_index(
             )
         };
         let streak = streak_html(p, &now);
+        let actions = format!(
+            "<a href=\"/pulses/{id}/edit\">edit</a> · \
+             <form method=\"post\" action=\"/pulses/{id}/delete\" onsubmit=\"return confirm('delete this pulse?')\" style=\"display:inline\">\
+             <button class=\"uncheck\">del</button></form>",
+            id = html_escape::encode_text(&p.id),
+        );
         body.push_str(&format!(
-            "<tr><td>{topic}<br><span class=\"meta\">{id}</span></td><td>{interval}</td><td align=\"center\">{toggle}</td><td>{streak}</td></tr>",
+            "<tr><td>{topic}<br><span class=\"meta\">{id}</span></td><td>{interval}</td><td align=\"center\">{toggle}</td><td>{streak}</td><td class=\"meta\">{actions}</td></tr>",
             topic = html_escape::encode_text(&p.topic),
             id = html_escape::encode_text(&p.id),
             interval = html_escape::encode_text(&p.interval.to_string()),
             toggle = toggle,
             streak = streak,
+            actions = actions,
         ));
     }
     body.push_str("</tbody></table>");
     Ok(Html(page("pulses", &body)))
+}
+
+/// Render the pulse create (or edit) form. `current` carries the pre-fill on
+/// edit; `None` for the create case.
+fn pulse_create_form(current: Option<(&str, &crate::models::Interval)>) -> String {
+    let (action, topic_val, selected) = match current {
+        None => (
+            "/pulses".to_string(),
+            "",
+            "daily",
+        ),
+        Some((id, interval)) => (
+            format!("/pulses/{id}/edit"),
+            id,
+            &interval.to_string()[..],
+        ),
+    };
+    let opts = ["daily", "weekly", "monthly", "yearly"]
+        .iter()
+        .map(|o| {
+            let sel = if *o == selected { " selected" } else { "" };
+            format!("<option value=\"{o}\"{sel}>{o}</option>")
+        })
+        .collect::<String>();
+    format!(
+        r#"<form method="post" action="{action}" style="margin:0.6rem 0">
+  <input name="topic" value="{topic}" placeholder="topic" style="padding:0.3em;width:55%">
+  <select name="interval" style="padding:0.3em">{opts}</select>
+  <button type="submit" style="padding:0.3em 0.8em">{label}</button>
+</form>"#,
+        action = html_escape::encode_double_quoted_attribute(&action),
+        topic = html_escape::encode_double_quoted_attribute(topic_val),
+        opts = opts,
+        label = if current.is_some() { "save" } else { "add" },
+    )
 }
 
 /// Render the last 7 slots as `▓▓░▒ ...` (filled = checked, empty = unchecked,
@@ -275,6 +462,61 @@ async fn pulse_uncheck(
     Ok(Redirect::to("/pulses").into_response())
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct PulseForm {
+    topic: String,
+    interval: crate::models::Interval,
+}
+
+async fn pulses_new_post(
+    State(state): State<AppState>,
+    Form(form): Form<PulseForm>,
+) -> ApiResult<Response> {
+    let body = crate::server::pulses::CreateBody {
+        topic: form.topic,
+        interval: form.interval,
+    };
+    let _ = crate::server::pulses::create_pulse_inner(&state, body).await?;
+    Ok(Redirect::to("/pulses").into_response())
+}
+
+async fn pulse_edit_get(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    let pulse = {
+        let conn = state.db();
+        db::get_pulse(&conn, &id)?.ok_or(ApiError::NotFound)?
+    };
+    let form = pulse_create_form(Some((&pulse.topic, &pulse.interval)));
+    let body = format!(
+        "<h1>Edit pulse</h1>\n<div class=\"meta\">id <code>{id}</code></div>\n{form}",
+        id = html_escape::encode_text(&pulse.id),
+    );
+    Ok(Html(page("edit pulse", &body)).into_response())
+}
+
+async fn pulse_edit_post(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Form(form): Form<PulseForm>,
+) -> ApiResult<Response> {
+    let body = crate::server::pulses::UpdateBody {
+        topic: Some(form.topic),
+        interval: Some(form.interval),
+    };
+    let _ = crate::server::pulses::update_pulse_inner(&state, &id, body).await?;
+    Ok(Redirect::to("/pulses").into_response())
+}
+
+async fn pulses_delete_post(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    let _ = crate::server::pulses::delete_pulse_inner(&state, &id).await?;
+    Ok(Redirect::to("/pulses").into_response())
+}
+
 // ----- metrics ---------------------------------------------------------------
 
 async fn metrics_index(State(state): State<AppState>) -> ApiResult<Html<String>> {
@@ -284,7 +526,7 @@ async fn metrics_index(State(state): State<AppState>) -> ApiResult<Html<String>>
     };
     let mut body = String::new();
     body.push_str("<h1>Metrics</h1>\n");
-    body.push_str("<div class=\"meta\">use <code>ron madd ...</code> to add, <code>ron mlog ...</code> to log values</div>\n");
+    body.push_str(&metric_create_form(None));
     if metrics.is_empty() {
         body.push_str("<p>(none)</p>");
         return Ok(Html(page("metrics", &body)));
@@ -349,7 +591,170 @@ async fn metric_detail(
         }
         body.push_str("</tbody></table>");
     }
+    // Write actions: log a value, edit topic, delete.
+    body.push_str(&metric_log_form(&metric.id));
+    body.push_str(&format!(
+        "<div class=\"meta\" style=\"margin-top:1rem\"><a href=\"/metrics/{id}/edit\">edit topic</a> · \
+         <form method=\"post\" action=\"/metrics/{id}/delete\" onsubmit=\"return confirm('delete this metric?')\">\
+         <button class=\"uncheck\">delete</button></form></div>",
+        id = html_escape::encode_text(&metric.id),
+    ));
     Ok(Html(page(&metric.topic, &body)).into_response())
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct MetricForm {
+    topic: String,
+}
+
+/// Create / edit-topic form. `current` is `(id, topic)` on edit, `None` on
+/// create.
+fn metric_create_form(current: Option<(&str, &str)>) -> String {
+    let (action, topic_val, label) = match current {
+        None => ("/metrics".to_string(), "", "add"),
+        Some((id, topic)) => (format!("/metrics/{id}/edit"), topic, "save"),
+    };
+    format!(
+        r#"<form method="post" action="{action}" style="margin:0.6rem 0">
+  <input name="topic" value="{topic}" placeholder="topic" style="padding:0.3em;width:55%">
+  <button type="submit" style="padding:0.3em 0.8em">{label}</button>
+</form>"#,
+        action = html_escape::encode_double_quoted_attribute(&action),
+        topic = html_escape::encode_double_quoted_attribute(topic_val),
+        label = label,
+    )
+}
+
+/// Log-value form on the metric detail page.
+fn metric_log_form(id: &str) -> String {
+    format!(
+        r#"<form method="post" action="/metrics/{id}/log" style="margin:1rem 0">
+  <input name="value" type="number" step="any" placeholder="value" style="padding:0.3em;width:8em" autofocus>
+  <input name="ts" placeholder="YYYY-MM-DDTHH:MM:SS (optional)" style="padding:0.3em;width:18em">
+  <button type="submit" style="padding:0.3em 0.8em">log</button>
+</form>"#,
+        id = html_escape::encode_double_quoted_attribute(id),
+    )
+}
+
+async fn metrics_new_post(
+    State(state): State<AppState>,
+    Form(form): Form<MetricForm>,
+) -> ApiResult<Response> {
+    let body = crate::server::metrics::CreateBody { topic: form.topic };
+    let _ = crate::server::metrics::create_metric_inner(&state, body).await?;
+    Ok(Redirect::to("/metrics").into_response())
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct MetricLogForm {
+    value: f64,
+    #[serde(default)]
+    ts: Option<String>,
+}
+
+async fn metric_log_post(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Form(form): Form<MetricLogForm>,
+) -> ApiResult<Response> {
+    let ts = form
+        .ts
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .and_then(|s| s.parse::<chrono::NaiveDateTime>().ok());
+    let body = crate::server::metrics::AppendBody { value: form.value, ts };
+    let _ = crate::server::metrics::append_point_inner(&state, &id, body).await?;
+    Ok(Redirect::to(&format!("/metrics/{id}")).into_response())
+}
+
+async fn metric_edit_get(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    let metric = {
+        let conn = state.db();
+        db::get_metric(&conn, &id)?.ok_or(ApiError::NotFound)?
+    };
+    let form = metric_create_form(Some((&metric.id, &metric.topic)));
+    let body = format!(
+        "<h1>Edit metric</h1>\n<div class=\"meta\">id <code>{id}</code></div>\n{form}",
+        id = html_escape::encode_text(&metric.id),
+    );
+    Ok(Html(page("edit metric", &body)).into_response())
+}
+
+async fn metric_edit_post(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Form(form): Form<MetricForm>,
+) -> ApiResult<Response> {
+    let body = crate::server::metrics::UpdateBody {
+        topic: Some(form.topic),
+    };
+    let _ = crate::server::metrics::update_metric_inner(&state, &id, body).await?;
+    Ok(Redirect::to(&format!("/metrics/{id}")).into_response())
+}
+
+async fn metrics_delete_post(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    let _ = crate::server::metrics::delete_metric_inner(&state, &id).await?;
+    Ok(Redirect::to("/metrics").into_response())
+}
+
+// ----- login ----------------------------------------------------------------
+
+#[derive(Debug, serde::Deserialize)]
+struct LoginForm {
+    key: String,
+}
+
+/// `GET /login`: render the unlock form. If no `viewer_secret` is configured
+/// the viewer is open and there's nothing to log in to — redirect to `/`.
+async fn login_get(State(state): State<AppState>) -> ApiResult<Response> {
+    if state.inner.viewer_secret.is_none() {
+        return Ok(Redirect::to("/").into_response());
+    }
+    let body = r#"<h1>Login</h1>
+<form method="post" action="/login" autocomplete="off">
+  <input type="password" name="key" placeholder="passphrase" autofocus
+         style="padding:0.3em 0.4em; width:60%">
+  <button type="submit">unlock</button>
+</form>
+<p class="meta">Set <code>viewer_secret</code> in <code>~/.config/ron/server.json</code>; print it with <code>ron viewer-key</code>.</p>"#;
+    Ok(Html(page("login", body)).into_response())
+}
+
+/// `POST /login`: validate the passphrase against `viewer_secret`; on match
+/// set the cookie and redirect to `/`, else re-render with an error.
+async fn login_post(
+    State(state): State<AppState>,
+    Form(form): Form<LoginForm>,
+) -> ApiResult<Response> {
+    let secret = match &state.inner.viewer_secret {
+        None => return Ok(Redirect::to("/").into_response()),
+        Some(s) => s.clone(),
+    };
+    if form.key == secret {
+        let mut resp = Redirect::to("/").into_response();
+        resp.headers_mut().insert(
+            axum::http::header::SET_COOKIE,
+            axum::http::HeaderValue::from_str(&crate::server::auth::viewer_set_cookie(&secret))
+                .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?,
+        );
+        Ok(resp)
+    } else {
+        let body = r#"<h1>Login</h1>
+<p style="color:#c33">wrong passphrase</p>
+<form method="post" action="/login" autocomplete="off">
+  <input type="password" name="key" placeholder="passphrase" autofocus
+         style="padding:0.3em 0.4em; width:60%">
+  <button type="submit">unlock</button>
+</form>"#;
+        Ok(Html(page("login", body)).into_response())
+    }
 }
 
 // ----- search ----------------------------------------------------------------
@@ -539,10 +944,19 @@ pub fn routes() -> axum::Router<AppState> {
         .route("/", get(index))
         .route("/view/:id", get(view_note))
         .route("/search", get(search_page))
-        .route("/pulses", get(pulses_index))
+        .route("/notes/new", get(note_new_get).post(note_new_post))
+        .route("/notes/:id/edit", get(note_edit_get).post(note_edit_post))
+        .route("/notes/:id/delete", post(note_delete_post))
+        .route("/pulses", get(pulses_index).post(pulses_new_post))
         .route("/pulses/:id/check", post(pulse_check))
         .route("/pulses/:id/uncheck", post(pulse_uncheck))
-        .route("/metrics", get(metrics_index))
+        .route("/pulses/:id/edit", get(pulse_edit_get).post(pulse_edit_post))
+        .route("/pulses/:id/delete", post(pulses_delete_post))
+        .route("/metrics", get(metrics_index).post(metrics_new_post))
         .route("/metrics/:id", get(metric_detail))
+        .route("/metrics/:id/log", post(metric_log_post))
+        .route("/metrics/:id/edit", get(metric_edit_get).post(metric_edit_post))
+        .route("/metrics/:id/delete", post(metrics_delete_post))
+        .route("/login", get(login_get).post(login_post))
         .route("/favicon.png", get(favicon))
 }

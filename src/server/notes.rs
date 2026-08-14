@@ -113,6 +113,12 @@ async fn create(
     State(state): State<AppState>,
     Json(body): Json<CreateBody>,
 ) -> ApiResult<(axum::http::StatusCode, Json<Note>)> {
+    let note = create_note_inner(&state, body).await?;
+    Ok((axum::http::StatusCode::CREATED, Json(note)))
+}
+
+/// Shared create logic (used by the JSON API and the viewer's form POST).
+pub async fn create_note_inner(state: &AppState, body: CreateBody) -> ApiResult<Note> {
     if body.title.trim().is_empty() {
         return Err(ApiError::BadRequest("title must not be empty".into()));
     }
@@ -135,8 +141,8 @@ async fn create(
         let conn = state.db();
         db::upsert_note(&conn, &note)?;
     }
-    persist_yaml(&state, yaml::Item::Note(note.clone()))?;
-    Ok((axum::http::StatusCode::CREATED, Json(note)))
+    persist_yaml(state, yaml::Item::Note(note.clone()))?;
+    Ok(note)
 }
 
 #[derive(Debug, Deserialize)]
@@ -154,9 +160,19 @@ async fn update(
     Path(id): Path<String>,
     Json(body): Json<UpdateBody>,
 ) -> ApiResult<Json<Note>> {
+    let note = update_note_inner(&state, &id, body).await?;
+    Ok(Json(note))
+}
+
+/// Shared update logic (used by the JSON API and the viewer's edit form).
+pub async fn update_note_inner(
+    state: &AppState,
+    id: &str,
+    body: UpdateBody,
+) -> ApiResult<Note> {
     let mut note = {
         let conn = state.db();
-        db::get_note(&conn, &id)?.ok_or(ApiError::NotFound)?
+        db::get_note(&conn, id)?.ok_or(ApiError::NotFound)?
     };
     if let Some(t) = body.title {
         if t.trim().is_empty() {
@@ -181,20 +197,29 @@ async fn update(
         let conn = state.db();
         db::upsert_note(&conn, &note)?;
     }
-    persist_yaml(&state, yaml::Item::Note(note.clone()))?;
-    Ok(Json(note))
+    persist_yaml(state, yaml::Item::Note(note.clone()))?;
+    Ok(note)
 }
 
 async fn delete(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult<Json<serde_json::Value>> {
-    let removed = {
-        let conn = state.db();
-        db::delete_note(&conn, &id)?
-    };
+    let removed = delete_note_inner(&state, &id).await?;
     if !removed {
         return Err(ApiError::NotFound);
     }
-    delete_yaml(&state, &id)?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// Shared delete logic (used by the JSON API and the viewer's delete form).
+/// Returns whether anything was removed.
+pub async fn delete_note_inner(state: &AppState, id: &str) -> ApiResult<bool> {
+    let removed = {
+        let conn = state.db();
+        db::delete_note(&conn, id)?
+    };
+    if removed {
+        delete_yaml(state, id)?;
+    }
+    Ok(removed)
 }
 
 /// Write a single item's YAML file in the repo dir, then commit it.

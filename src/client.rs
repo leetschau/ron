@@ -61,6 +61,7 @@ pub fn base_url() -> String {
 pub fn http_client() -> Result<Client> {
     Client::builder()
         .timeout(Duration::from_secs(30))
+        .no_proxy()
         .build()
         .map_err(|e| anyhow!(e).context("building HTTP client"))
 }
@@ -287,6 +288,21 @@ pub fn delete_pulse(id: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn update_pulse(
+    id: &str,
+    topic: Option<String>,
+    interval: Option<String>,
+) -> Result<Pulse> {
+    let mut payload = serde_json::json!({});
+    if let Some(v) = topic {
+        payload["topic"] = serde_json::Value::String(v);
+    }
+    if let Some(v) = interval {
+        payload["interval"] = serde_json::Value::String(v);
+    }
+    Api::put_json_reply(&format!("/api/pulses/{id}"), &payload)
+}
+
 pub fn list_metrics() -> Result<Vec<Metric>> {
     Api::get_json("/api/metrics")
 }
@@ -333,6 +349,14 @@ pub fn delete_metric(id: &str) -> Result<()> {
         return Err(anyhow!("delete failed: HTTP {}", resp.status()));
     }
     Ok(())
+}
+
+pub fn update_metric(id: &str, topic: Option<String>) -> Result<Metric> {
+    let mut payload = serde_json::json!({});
+    if let Some(v) = topic {
+        payload["topic"] = serde_json::Value::String(v);
+    }
+    Api::put_json_reply(&format!("/api/metrics/{id}"), &payload)
 }
 
 // ----- admin -----
