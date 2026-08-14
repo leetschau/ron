@@ -125,6 +125,36 @@ pub fn remove_and_commit(repo: &Path, paths: &[&str], message: &str) -> Result<b
     Ok(out.status.success())
 }
 
+/// Like [`add_and_commit`], but stages the whole working tree first (`git
+/// add -A`) so deletions and renames are committed alongside the given
+/// paths. Used by export, which rewrites the YAML layout wholesale.
+pub fn add_all_and_commit(repo: &Path, _paths: &[&str], message: &str) -> Result<bool> {
+    let mut add = Command::new("git");
+    add.arg("-C").arg(repo).arg("add").arg("-A");
+    let out = add.output().context("git add -A")?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git add -A failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["commit", "-m", message])
+        .output()
+        .context("git commit")?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        if stderr.contains("nothing to commit") || stdout.contains("nothing to commit") {
+            return Ok(false);
+        }
+        anyhow::bail!("git commit failed: {}", stderr.trim());
+    }
+    Ok(true)
+}
+
 pub fn push(repo: &Path, remote: &str, branch: &str) -> Result<()> {
     let out = Command::new("git")
         .arg("-C")

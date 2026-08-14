@@ -26,9 +26,16 @@ async fn export(State(state): State<AppState>) -> ApiResult<Json<ExportReport>> 
         )
     };
     let repo = state.inner.paths.repo_dir.clone();
-    // Clear the repo dir of .yaml files first so stale ones don't survive.
+    // Clear stale YAML in the repo root (legacy flat layout) and the
+    // per-type subdirs first so deleted items don't survive the rewrite.
     let mut kept: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for entry in std::fs::read_dir(&repo)? {
+    for sub in ["notes", "pulses", "metrics"] {
+        std::fs::create_dir_all(repo.join(sub))?;
+    }
+    for entry in std::fs::read_dir(&repo)?.chain(std::fs::read_dir(repo.join("notes"))?)
+        .chain(std::fs::read_dir(repo.join("pulses"))?)
+        .chain(std::fs::read_dir(repo.join("metrics"))?)
+    {
         let path = entry?.path();
         if path.extension().and_then(|s| s.to_str()) == Some("yaml") {
             std::fs::remove_file(&path).ok();
@@ -36,20 +43,22 @@ async fn export(State(state): State<AppState>) -> ApiResult<Json<ExportReport>> 
     }
     for n in &notes {
         let _ = crate::yaml::write_item(&repo, &Item::Note(n.clone()))?;
-        kept.insert(format!("{}.yaml", n.id));
+        kept.insert(format!("notes/{}.yaml", n.id));
     }
     for p in &pulses {
         let _ = crate::yaml::write_item(&repo, &Item::Pulse(p.clone()))?;
-        kept.insert(format!("{}.yaml", p.id));
+        kept.insert(format!("pulses/{}.yaml", p.id));
     }
     for m in &metrics {
         let _ = crate::yaml::write_item(&repo, &Item::Metric(m.clone()))?;
-        kept.insert(format!("{}.yaml", m.id));
+        kept.insert(format!("metrics/{}.yaml", m.id));
     }
     let mut paths: Vec<String> = kept.iter().cloned().collect();
     paths.sort();
     let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
-    let committed = git::add_and_commit(&repo, &path_refs, "export: full rewrite")?;
+    // `-A` so deletions of legacy flat-layout files and stale subdir files
+    // are staged too, not just the rewritten ones.
+    let committed = git::add_all_and_commit(&repo, &path_refs, "export: full rewrite")?;
     Ok(Json(ExportReport {
         notes: notes.len(),
         pulses: pulses.len(),

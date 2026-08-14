@@ -1,11 +1,12 @@
 //! YAML serialization for the on-disk format.
 //!
 //! Each item (Note, Pulse, Metric) is stored in its own file under the repo
-//! directory. The file name is `<id>.yaml` (NOT `.md`, since the body lives
-//! inside YAML as a string). All files carry a `version` and a `type` field
-//! for forward-compatible migrations.
+//! directory, in a per-type subdirectory: `notes/`, `pulses/`, `metrics/`.
+//! The file name is `<id>.yaml` (NOT `.md`, since the body lives inside YAML
+//! as a string). All files carry a `version` and a `type` field for
+//! forward-compatible migrations.
 //!
-//! Example (note):
+//! Example (note at `notes/note-20260806-1432-a8f.yaml`):
 //! ```yaml
 //! version: 2
 //! type: note
@@ -86,16 +87,45 @@ pub fn parse(text: &str) -> Result<Item> {
     Ok(v.item)
 }
 
-/// Write an item to `<dir>/<id>.yaml`.
+/// Subdirectory of the repo dir holding this item type.
+pub fn subdir(item: &Item) -> &'static str {
+    match item {
+        Item::Note(_) => "notes",
+        Item::Pulse(_) => "pulses",
+        Item::Metric(_) => "metrics",
+    }
+}
+
+/// Subdirectory for a raw item id (`note-*`, `pulse-*`, `metric-*`).
+pub fn subdir_for_id(id: &str) -> Option<&'static str> {
+    if id.starts_with("note-") {
+        Some("notes")
+    } else if id.starts_with("pulse-") {
+        Some("pulses")
+    } else if id.starts_with("metric-") {
+        Some("metrics")
+    } else {
+        None
+    }
+}
+
+/// Write an item to `<dir>/<subdir>/<id>.yaml`, creating the subdirectory.
 pub fn write_item(dir: &Path, item: &Item) -> Result<PathBuf> {
     let (id, text) = match item {
         Item::Note(n) => (n.id.clone(), serialize(n)?),
         Item::Pulse(p) => (p.id.clone(), serialize_pulse(p)?),
         Item::Metric(m) => (m.id.clone(), serialize_metric(m)?),
     };
+    let dir = dir.join(subdir(item));
+    fs::create_dir_all(&dir).with_context(|| format!("mkdir {}", dir.display()))?;
     let path = dir.join(format!("{id}.yaml"));
     fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
+}
+
+/// Path of an item's YAML file relative to the repo dir (`notes/<id>.yaml`).
+pub fn rel_path(id: &str) -> Option<String> {
+    subdir_for_id(id).map(|sub| format!("{sub}/{id}.yaml"))
 }
 
 /// Read a single item from a YAML file.
@@ -104,19 +134,34 @@ pub fn read_item(path: &Path) -> Result<Item> {
     parse(&text)
 }
 
-/// Read all items in a directory. Non-`.yaml` files and parse errors are
-/// skipped with a warning printed to stderr.
+/// Read all items in a repo dir. Walks the per-type subdirectories; for the
+/// legacy flat layout it also scans the repo root. Non-`.yaml` files and
+/// parse errors are skipped with a warning printed to stderr.
 pub fn read_all(dir: &Path) -> Result<Vec<Item>> {
     let mut items = Vec::new();
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("yaml") {
-            continue;
-        }
-        match read_item(&path) {
-            Ok(item) => items.push(item),
-            Err(e) => eprintln!("skip {}: {e:#}", path.display()),
+    let mut dirs: Vec<PathBuf> = [""]
+        .iter()
+        .map(|sub| dir.join(sub))
+        .collect();
+    // Walk the tree; picks up both the per-type subdirs (notes/, pulses/,
+    // metrics/) and the legacy flat layout (files directly in the root).
+    while let Some(d) = dirs.pop() {
+        for entry in fs::read_dir(&d)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                if path.file_name().and_then(|s| s.to_str()) == Some(".git") {
+                    continue;
+                }
+                dirs.push(path);
+                continue;
+            }
+            if path.extension().and_then(|s| s.to_str()) != Some("yaml") {
+                continue;
+            }
+            match read_item(&path) {
+                Ok(item) => items.push(item),
+                Err(e) => eprintln!("skip {}: {e:#}", path.display()),
+            }
         }
     }
     Ok(items)
@@ -223,5 +268,27 @@ mod tests {
     fn version_mismatch_is_rejected() {
         let text = serialize(&note()).unwrap().replace("version: 2", "version: 3");
         assert!(parse(&text).is_err());
+    }
+
+    #[test]
+    fn write_uses_per_type_subdirs_and_read_all_finds_both_layouts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+
+        // New layout: notes/ subdir.
+        let path = write_item(repo, &Item::Note(note())).unwrap();
+        assert_eq!(path, repo.join("notes").join("note-20260806-1432-a8f.yaml"));
+        assert_eq!(rel_path("note-20260806-1432-a8f").as_deref(), Some("notes/note-20260806-1432-a8f.yaml"));
+
+        // Legacy flat layout: same file at the repo root is also readable.
+        let flat = repo.join("note-20060521-1500-cad.yaml");
+        std::fs::write(&flat, serialize(&note()).unwrap().replace("note-20260806-1432-a8f", "note-20060521-1500-cad")).unwrap();
+
+        let mut ids: Vec<String> = read_all(repo).unwrap().into_iter().filter_map(|i| match i {
+            Item::Note(n) => Some(n.id),
+            _ => None,
+        }).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["note-20060521-1500-cad".to_string(), "note-20260806-1432-a8f".to_string()]);
     }
 }

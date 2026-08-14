@@ -132,7 +132,7 @@ ron sync       # git pull --ff-only, then rebuild the DB
 ron migrate <old-notes-dir> <new-yaml-dir>            # interactive: prompts on title/created mismatches
 ron migrate <old-notes-dir> <new-yaml-dir> --fix-all  # auto-fix all mismatches
 ron migrate <old-notes-dir> <new-yaml-dir> --keep-all # keep originals, no prompt
-# then move the new *.yaml files into ~/.local/share/ron/repo/ and run `ron import`
+# then move the new *.yaml files into ~/.local/share/ron/repo/notes/ and run `ron import`
 ```
 
 When a note's title contains a date that differs from its `Created:` field

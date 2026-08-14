@@ -1,7 +1,5 @@
 //! REST API for Notes.
 
-use std::path::PathBuf;
-
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use chrono::Local;
@@ -231,31 +229,35 @@ pub fn persist_yaml(state: &AppState, item: yaml::Item) -> ApiResult<()> {
             return Ok(());
         }
     };
-    if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-        let rel = name.to_string();
-        let msg = match &item {
-            yaml::Item::Note(n) => format!("note: {}: {}", n.id, summary(&n.title)),
-            yaml::Item::Pulse(p) => format!("pulse: {}: {}", p.id, summary(&p.topic)),
-            yaml::Item::Metric(m) => format!("metric: {}: {}", m.id, summary(&m.topic)),
-        };
-        if let Err(e) = crate::git::add_and_commit(&state.inner.paths.repo_dir, &[&rel], &msg) {
-            eprintln!("warning: git commit failed: {e:#}");
-        }
+    // Git path relative to the repo root (notes/<id>.yaml).
+    let rel = path
+        .strip_prefix(&state.inner.paths.repo_dir)
+        .unwrap_or(&path)
+        .to_string_lossy()
+        .into_owned();
+    let msg = match &item {
+        yaml::Item::Note(n) => format!("note: {}: {}", n.id, summary(&n.title)),
+        yaml::Item::Pulse(p) => format!("pulse: {}: {}", p.id, summary(&p.topic)),
+        yaml::Item::Metric(m) => format!("metric: {}: {}", m.id, summary(&m.topic)),
+    };
+    if let Err(e) = crate::git::add_and_commit(&state.inner.paths.repo_dir, &[&rel], &msg) {
+        eprintln!("warning: git commit failed: {e:#}");
     }
     Ok(())
 }
 
 /// Remove a single item's YAML file by id, then commit the deletion.
 pub fn delete_yaml(state: &AppState, id: &str) -> ApiResult<()> {
-    let path: PathBuf = state.inner.paths.repo_dir.join(format!("{id}.yaml"));
-    if path.exists() {
-        if let Err(e) = std::fs::remove_file(&path) {
-            eprintln!("warning: yaml delete failed {}: {e}", path.display());
+    if let Some(rel) = yaml::rel_path(id) {
+        let path = state.inner.paths.repo_dir.join(&rel);
+        if path.exists() {
+            if let Err(e) = std::fs::remove_file(&path) {
+                eprintln!("warning: yaml delete failed {}: {e}", path.display());
+            }
         }
-    }
-    let rel = format!("{id}.yaml");
-    if let Err(e) = crate::git::remove_and_commit(&state.inner.paths.repo_dir, &[&rel], &format!("delete: {id}")) {
-        eprintln!("warning: git rm/commit failed: {e:#}");
+        if let Err(e) = crate::git::remove_and_commit(&state.inner.paths.repo_dir, &[&rel], &format!("delete: {id}")) {
+            eprintln!("warning: git rm/commit failed: {e:#}");
+        }
     }
     Ok(())
 }

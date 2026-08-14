@@ -39,6 +39,7 @@ impl AppState {
         // being tracked if it's ever moved in.
         crate::git::ensure_repo(&paths.repo_dir)?;
         write_gitignore(&paths.repo_dir)?;
+        migrate_flat_layout(&paths.repo_dir)?;
         let conn = crate::db::open(&paths.db_path)
             .with_context(|| format!("opening db {}", paths.db_path.display()))?;
         // Bootstrap the DB from YAML if it appears empty (cold start / sync
@@ -80,6 +81,50 @@ fn write_gitignore(repo_dir: &std::path::Path) -> Result<()> {
         std::fs::write(&path, CONTENT).ok();
     }
     Ok(())
+}
+
+/// Move legacy flat-layout YAML files (`<repo>/<id>.yaml`) into their
+/// per-type subdirectory (`<repo>/notes/<id>.yaml` etc.) and commit the
+/// move once as a single change. Idempotent: a no-op when nothing matches.
+fn migrate_flat_layout(repo_dir: &std::path::Path) -> Result<()> {
+    use std::fs;
+    let mut moved: Vec<String> = Vec::new();
+    for entry in fs::read_dir(repo_dir).context("scanning repo dir")? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("yaml") {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let id = name.trim_end_matches(".yaml");
+        let Some(sub) = crate::yaml::subdir_for_id(id) else {
+            continue;
+        };
+        let dst = repo_dir.join(sub).join(name);
+        fs::create_dir_all(repo_dir.join(sub))?;
+        if dst.exists() {
+            // Both layouts have the item; the subdir copy wins, drop flat.
+            fs::remove_file(&path).ok();
+        } else {
+            fs::rename(&path, &dst)
+                .with_context(|| format!("moving {} -> {}", path.display(), dst.display()))?;
+        }
+        moved.push(format!("{sub}/{name}"));
+    }
+    if moved.is_empty() {
+        return Ok(());
+    }
+    let refs: Vec<&str> = moved.iter().map(|s| s.as_str()).collect();
+    match crate::git::add_all_and_commit(repo_dir, &refs, "layout: move YAML into per-type dirs") {
+        Ok(_) => Ok(()),
+        // Not a git repo (tests) or git missing: files are already moved.
+        Err(e) => {
+            eprintln!("warning: layout migration commit failed: {e:#}");
+            Ok(())
+        }
+    }
 }
 
 /// If all data tables are empty and there are YAML files in the repo dir,

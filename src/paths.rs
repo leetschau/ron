@@ -5,9 +5,9 @@
 //! ~/.local/share/ron/        <- app_home
 //!   db.sqlite3               <- SQLite working store
 //!   repo/                    <- YAML files (git-tracked by the server)
-//!     note-*.yaml
-//!     pulse-*.yaml
-//!     metric-*.yaml
+//!     notes/note-*.yaml
+//!     pulses/pulse-*.yaml
+//!     metrics/metric-*.yaml
 //! ~/.config/ron/
 //!   server.json              <- listen address
 //!   tokens.json              <- bearer-token store (NOT committed to git)

@@ -109,11 +109,16 @@ from YAML (`rebuild_db_from_yaml`). Not git-tracked.
 
 ### `repo/` — git repo of YAML files
 
-The **source of truth**. Each note/pulse/metric is one YAML file:
-`note-<id>.yaml`, `pulse-<id>.yaml`, `metric-<id>.yaml`. Every server write
+The **source of truth**. Each note/pulse/metric is one YAML file, stored
+under a per-type subdirectory: `notes/note-<id>.yaml`,
+`pulses/pulse-<id>.yaml`, `metrics/metric-<id>.yaml`. Every server write
 rewrites the affected file and commits it (`persist_yaml` / `delete_yaml`,
 `src/server/notes.rs`). The on-disk YAML format is versioned
 (`FORMAT_VERSION = 2`, `src/yaml.rs`).
+
+Older releases kept all YAML files flat in the repo root; the server
+migrates that layout into the subdirectories automatically on startup
+(one `layout:` commit), and still reads the flat layout if it finds one.
 
 The git repo is what backs `ron backup` (`git push origin master`) and
 `ron sync` (`git pull --ff-only origin master` then rebuild the DB). Configure
