@@ -9,7 +9,9 @@
 //!     pulses/pulse-*.yaml
 //!     metrics/metric-*.yaml
 //! ~/.config/ron/
-//!   server.json              <- listen address
+//!   server.json              <- listen address, optional viewer gate, and
+//!                              the `url` CLI clients dial as a fallback
+//!                              when $RON_URL is unset
 //!   tokens.json              <- bearer-token store (NOT committed to git)
 //! ```
 
@@ -59,6 +61,11 @@ impl Paths {
 pub struct ServerConfig {
     #[serde(default = "default_listen")]
     pub listen: String,
+    /// URL CLI clients dial when `$RON_URL` is unset (e.g.
+    /// `http://192.168.1.5:7780` on a second machine). Not a bind spec —
+    /// that's `listen`; see `client::base_url` for the precedence order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     /// Optional shared passphrase gating the browser viewer. When `None`,
     /// viewer routes stay open (the historical localhost-bind behaviour).
     /// When `Some`, viewer routes require a `ron_viewer` cookie obtained via
@@ -78,9 +85,21 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             listen: default_listen(),
+            url: None,
             viewer_secret: None,
         }
     }
+}
+
+/// Read the `url` key from `~/.config/ron/server.json`, if the file exists
+/// and sets one. Unlike `Paths::detect` / `ServerConfig::load` this never
+/// creates files or directories — a remote CLI host may have nothing but
+/// `cli-token.json` and should stay that way.
+pub fn read_configured_url() -> Option<String> {
+    let dirs = ProjectDirs::from("", "", "ron")?;
+    let path = dirs.config_dir().join("server.json");
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<ServerConfig>(&text).ok()?.url
 }
 
 impl ServerConfig {
@@ -115,12 +134,14 @@ mod tests {
         let path = dir.path().join("server.json");
         let cfg = ServerConfig {
             listen: "127.0.0.1:9000".into(),
+            url: Some("http://192.168.1.5:9000".into()),
             viewer_secret: Some("hush".into()),
         };
         std::fs::write(&path, serde_json::to_string(&cfg).unwrap()).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let back: ServerConfig = serde_json::from_str(&text).unwrap();
         assert_eq!(back.listen, "127.0.0.1:9000");
+        assert_eq!(back.url.as_deref(), Some("http://192.168.1.5:9000"));
         assert_eq!(back.viewer_secret.as_deref(), Some("hush"));
     }
 
@@ -129,6 +150,21 @@ mod tests {
         let text = "{}";
         let cfg: ServerConfig = serde_json::from_str(text).unwrap();
         assert_eq!(cfg.listen, "0.0.0.0:7780");
+        assert!(cfg.url.is_none());
         assert!(cfg.viewer_secret.is_none());
+    }
+
+    #[test]
+    fn server_config_parses_url_alone() {
+        let cfg: ServerConfig =
+            serde_json::from_str(r#"{"url": "http://192.168.1.5:7780"}"#).unwrap();
+        assert_eq!(cfg.url.as_deref(), Some("http://192.168.1.5:7780"));
+        assert_eq!(cfg.listen, "0.0.0.0:7780");
+    }
+
+    #[test]
+    fn server_config_omits_url_when_unset() {
+        let text = serde_json::to_string(&ServerConfig::default()).unwrap();
+        assert!(!text.contains("url"));
     }
 }

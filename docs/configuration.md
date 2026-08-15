@@ -6,7 +6,7 @@ a complete reference; for the auth/security model behind the credentials see
 
 | Path | What it is | Format | Written by |
 |------|------------|--------|------------|
-| `~/.config/ron/server.json` | listen address + optional viewer gate | JSON | `ron serve` (defaults); user-edits for `viewer_secret` |
+| `~/.config/ron/server.json` | listen address, optional viewer gate, CLI `url` fallback | JSON | `ron serve` (defaults); user-edits for `viewer_secret` / `url` |
 | `~/.config/ron/tokens.json` | server-side store of API token hashes | JSON | server (`ron token grant` / `revoke`) |
 | `~/.config/ron/cli-token.json` | raw API secret this machine sends | JSON | `ron token grant` |
 | `~/.local/share/ron/db.sqlite3` | SQLite working store | binary | server, always |
@@ -29,6 +29,7 @@ machine-specific settings are never committed or synced.
 ```json
 {
   "listen": "0.0.0.0:7780",
+  "url": "http://192.168.1.5:7780",
   "viewer_secret": "optional passphrase"
 }
 ```
@@ -36,6 +37,11 @@ machine-specific settings are never committed or synced.
 - **`listen`** (string, default `"0.0.0.0:7780"`): socket the HTTP server binds.
   Bound on all interfaces by default so a phone or a second machine on the LAN
   can reach it; set `"127.0.0.1:7780"` to restore localhost-only.
+- **`url`** (string, optional): base URL the CLI dials when `$RON_URL` is
+  unset (`client::base_url`, `src/client.rs`; precedence env var → this key →
+  `http://127.0.0.1:7780`). Set it on a **remote machine** to point its CLI at
+  the server — it's a dial URL, deliberately separate from `listen`, which is
+  a bind spec (`0.0.0.0` isn't a dialable address). Ignored by the server.
 - **`viewer_secret`** (string, optional): when present, the browser/HTML routes
   require a `ron_viewer` cookie obtained via `/?key=<secret>` or `/login`. When
   absent, the viewer is open to anyone who can reach the port. Print the
@@ -92,7 +98,8 @@ host has its own for the local CLI.
 Lifecycle: created by `ron token grant`; cleared by `ron token revoke <id>`
 when the id matches the locally-stored one. To use the CLI from a **second
 machine** on the LAN: grant on the server host, then copy this file to the
-remote's `~/.config/ron/cli-token.json` and `export RON_URL` there. The
+remote's `~/.config/ron/cli-token.json` and point the remote at the server
+(`export RON_URL`, or the `url` key in its `server.json`). The
 remote cannot self-grant (token grant is loopback-only).
 
 ## Data files (`~/.local/share/ron/`)

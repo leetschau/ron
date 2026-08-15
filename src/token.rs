@@ -10,7 +10,8 @@
 //!
 //! It is distinct from the other two config files: `cli-token.json` (client
 //! side) holds the raw secret this machine sends as a header, while
-//! `server.json` holds the listen address and the browser-gate `viewer_secret`
+//! `server.json` holds the listen address, the browser-gate `viewer_secret`,
+//! and the CLI's `url` fallback (see `docs/configuration.md`)
 //! (a separate credential for the HTML routes — see `docs/phone-access.md`).
 //!
 //! The file lives under `~/.config/ron/`, deliberately **outside** the

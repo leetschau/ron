@@ -75,7 +75,9 @@ A CLI on a second machine (still on the LAN) works in three steps:
    accepted).
 2. Copy `~/.config/ron/cli-token.json` from the server host to the same path
    on the remote machine. (It's plain JSON: `{id, label, secret}`.)
-3. On the remote: `export RON_URL=http://<server-lan-ip>:7780`. Then `ron
+3. On the remote: `export RON_URL=http://<server-lan-ip>:7780`, or set
+   `{ "url": "http://<server-lan-ip>:7780" }` in the remote's
+   `~/.config/ron/server.json`. Then `ron
    list`, `ron add`, etc. send `Authorization: Bearer <secret>` over the LAN.
 
 The remote cannot self-grant a token (loopback-only), which is what keeps a

@@ -55,7 +55,9 @@ ron token revoke <id>
 peers, so a token can only be minted on the server's own host. To use the CLI
 from a **second machine** on the LAN: run `ron token grant <label>` on the
 server host, copy `~/.config/ron/cli-token.json` to the remote machine, and
-`export RON_URL=http://<server-lan-ip>:7780` there.
+point it at the server — either `export RON_URL=http://<server-lan-ip>:7780`
+or `{ "url": "http://<server-lan-ip>:7780" }` in the remote's
+`~/.config/ron/server.json`.
 
 ### Notes
 

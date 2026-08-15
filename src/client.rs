@@ -1,6 +1,8 @@
 //! HTTP client wrapper for the CLI.
 //!
-//! Talks to a local ron server (`$RON_URL`, default `http://127.0.0.1:7780`).
+//! Talks to a local ron server. Base URL resolution (`base_url`):
+//! `$RON_URL` env var, else the `url` key in `~/.config/ron/server.json`,
+//! else `http://127.0.0.1:7780`.
 //! The bearer token is read from `~/.config/ron/cli-token.json` so that
 //! `ron token grant` saves it once and every later command reuses it.
 
@@ -55,7 +57,13 @@ pub fn clear_token() -> Result<()> {
 }
 
 pub fn base_url() -> String {
-    std::env::var("RON_URL").unwrap_or_else(|_| DEFAULT_URL.to_string())
+    if let Some(u) = std::env::var("RON_URL")
+        .ok()
+        .filter(|u| !u.is_empty())
+    {
+        return u;
+    }
+    crate::paths::read_configured_url().unwrap_or_else(|| DEFAULT_URL.to_string())
 }
 
 pub fn http_client() -> Result<Client> {
