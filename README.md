@@ -75,8 +75,24 @@ By default the viewer is open to anyone who can reach the port. To gate it,
 add a passphrase to `~/.config/ron/server.json`:
 
 ```json
-{ "listen": "0.0.0.0:7780", "viewer_secret": "your-passphrase" }
+{
+  "listen": "0.0.0.0:7780",
+  "viewer_secret": "your-passphrase",
+  "default_notebook": "default",
+  "editor": "code -w",
+  "cli_viewer": "mdless",
+  "viewer": true
+}
 ```
+
+- `default_notebook` — notebook for new notes without one; the server is the
+  authority (CLI fetches it from the server for the `ron add` prefill, local
+  value is an offline fallback)
+- `editor` — editor command for `ron add`/`ron edit` (args allowed); beats
+  `$EDITOR`, which beats the `nvim` fallback
+- `cli_viewer` — command `ron view` pipes notes through (default `mdless`;
+  set `""` for raw cat-style stdout)
+- `viewer` — set `false` to serve the API only (no HTML pages)
 
 Then on the phone either:
 
@@ -111,7 +127,7 @@ or `{ "url": "http://<server-lan-ip>:7780" }` in the remote's
 ```
 ron add                       # open $EDITOR on a template; saves a new note
 ron list            [n]       # n most-recent notes (default 5)
-ron view            <id>      # print a note to stdout (cat-style)
+ ron view            <id>      # print a note through `cli_viewer` (default `mdless`)
 ron edit            <id>      # open $EDITOR on an existing note
 ron delete          <id>      # delete by ID (or 1-based index from list/search)
 ron search          [opts] PATTERN [PATTERN...]

@@ -369,6 +369,19 @@ pub fn update_metric(id: &str, topic: Option<String>) -> Result<Metric> {
 
 // ----- admin -----
 
+/// Client-relevant server configuration (`GET /api/config`). The server is
+/// the authority for `default_notebook`; the local `server.json` value is
+/// only an offline fallback.
+#[derive(Debug, Deserialize)]
+pub struct ServerInfo {
+    pub default_notebook: String,
+}
+
+/// Fetch the server's `default_notebook`.
+pub fn server_default_notebook() -> Result<String> {
+    Ok(Api::get_json::<ServerInfo>("/api/config")?.default_notebook)
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ExportReport {
     pub notes: usize,

@@ -104,6 +104,20 @@ async fn sync(State(state): State<AppState>) -> ApiResult<Json<SyncReport>> {
     }))
 }
 
+/// Client-relevant server configuration. The server is the single authority
+/// for `default_notebook`; the CLI fetches this for the `ron add` prefill
+/// (falling back to its local `server.json` value when unreachable).
+async fn config(State(state): State<AppState>) -> ApiResult<Json<ConfigReport>> {
+    Ok(Json(ConfigReport {
+        default_notebook: state.inner.default_notebook.clone(),
+    }))
+}
+
+#[derive(Serialize)]
+pub struct ConfigReport {
+    pub default_notebook: String,
+}
+
 #[derive(Serialize)]
 pub struct ExportReport {
     pub notes: usize,
@@ -130,4 +144,5 @@ pub fn routes() -> axum::Router<AppState> {
         .route("/api/import", routing::post(import))
         .route("/api/backup", routing::post(backup))
         .route("/api/sync", routing::post(sync))
+        .route("/api/config", routing::get(config))
 }

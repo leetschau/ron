@@ -30,10 +30,14 @@ pub struct Inner {
     /// Optional passphrase gating the browser viewer. `None` = open viewer
     /// (historical behaviour); `Some` = cookie-gated. See docs/phone-access.md.
     pub viewer_secret: Option<String>,
+    /// Notebook used when a note is created without one.
+    pub default_notebook: String,
+    /// Serve the browser viewer (HTML routes)? `false` = API-only server.
+    pub viewer_enabled: bool,
 }
 
 impl AppState {
-    pub fn new(paths: Paths, viewer_secret: Option<String>) -> Result<Self> {
+    pub fn new(paths: Paths, cfg: &crate::paths::ServerConfig) -> Result<Self> {
         // Ensure the git repo exists before opening the DB; .gitignore below
         // keeps the SQLite store (which lives *outside* the repo anyway) from
         // being tracked if it's ever moved in.
@@ -50,7 +54,9 @@ impl AppState {
                 paths,
                 db: std::sync::Mutex::new(conn),
                 tokens: std::sync::RwLock::new(TokenStore::default()),
-                viewer_secret,
+                viewer_secret: cfg.viewer_secret.clone(),
+                default_notebook: cfg.default_notebook.clone(),
+                viewer_enabled: cfg.viewer,
             }),
         })
     }

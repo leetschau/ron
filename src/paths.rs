@@ -10,9 +10,10 @@
 //!     metrics/metric-*.yaml
 //!     resources/             <- note attachments (`resources/<name>` refs)
 //! ~/.config/ron/
-//!   server.json              <- listen address, optional viewer gate, and
-//!                              the `url` CLI clients dial as a fallback
-//!                              when $RON_URL is unset
+//!   server.json              <- listen address, optional viewer gate, the
+//!                              `url` CLI clients dial as a fallback
+//!                              when $RON_URL is unset, plus optional
+//!                              `default_notebook` / `editor` / `viewer`
 //!   tokens.json              <- bearer-token store (NOT committed to git)
 //! ```
 
@@ -73,6 +74,27 @@ pub struct ServerConfig {
     /// `/?key=<secret>` or the `/login` form. See docs/phone-access.md.
     #[serde(default)]
     pub viewer_secret: Option<String>,
+    /// Notebook used when a note is created without one (empty notebook
+    /// field). The **server is the authority**: `create_note_inner` applies
+    /// it server-side, the viewer form prefills from it, and the CLI fetches
+    /// it via `GET /api/config` for the `ron add` prefill — the local value
+    /// is only an offline fallback (see `client::server_default_notebook`).
+    #[serde(default = "default_notebook")]
+    pub default_notebook: String,
+    /// Editor command (may include args, e.g. `code -w`) used by `ron add` /
+    /// `ron edit`. Takes precedence over `$EDITOR`; fallback chain is
+    /// this key → `$EDITOR` → `nvim`. CLI-side only — ignored by the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editor: Option<String>,
+    /// Command (args allowed) `ron view` pipes the note through instead of
+    /// plain cat-style stdout. Set to `""` to get the raw print back.
+    /// CLI-side only — ignored by the server.
+    #[serde(default = "default_cli_viewer")]
+    pub cli_viewer: String,
+    /// Serve the browser viewer (HTML routes + `/resources/*`)? Set `false`
+    /// for an API-only server. `true` by default.
+    #[serde(default = "default_viewer")]
+    pub viewer: bool,
 }
 
 fn default_listen() -> String {
@@ -82,14 +104,41 @@ fn default_listen() -> String {
     "0.0.0.0:7780".to_string()
 }
 
+fn default_notebook() -> String {
+    "default".to_string()
+}
+
+fn default_cli_viewer() -> String {
+    "mdless".to_string()
+}
+
+fn default_viewer() -> bool {
+    true
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             listen: default_listen(),
             url: None,
             viewer_secret: None,
+            default_notebook: default_notebook(),
+            editor: None,
+            cli_viewer: default_cli_viewer(),
+            viewer: default_viewer(),
         }
     }
+}
+
+/// Read the config file if it exists, without creating anything (unlike
+/// `ServerConfig::load`). Returns `None` when the file is absent or
+/// unparseable — a remote CLI host may have no config and should stay that
+/// way.
+fn read_existing_config() -> Option<ServerConfig> {
+    let dirs = ProjectDirs::from("", "", "ron")?;
+    let path = dirs.config_dir().join("server.json");
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
 }
 
 /// Read the `url` key from `~/.config/ron/server.json`, if the file exists
@@ -97,10 +146,30 @@ impl Default for ServerConfig {
 /// creates files or directories — a remote CLI host may have nothing but
 /// `cli-token.json` and should stay that way.
 pub fn read_configured_url() -> Option<String> {
-    let dirs = ProjectDirs::from("", "", "ron")?;
-    let path = dirs.config_dir().join("server.json");
-    let text = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str::<ServerConfig>(&text).ok()?.url
+    read_existing_config().and_then(|c| c.url)
+}
+
+/// Read `default_notebook` without creating anything; `"default"` when the
+/// file or key is absent.
+pub fn read_default_notebook() -> String {
+    read_existing_config()
+        .map(|c| c.default_notebook)
+        .unwrap_or_else(default_notebook)
+}
+
+/// Read the configured `editor` command (args included) without creating
+/// anything; `None` when unset.
+pub fn read_editor() -> Option<String> {
+    read_existing_config().and_then(|c| c.editor)
+}
+
+/// Read the `cli_viewer` command `ron view` pipes notes through, without
+/// creating anything; `"mdless"` when the file or key is absent. An empty
+/// string means "print raw, no viewer".
+pub fn read_cli_viewer() -> String {
+    read_existing_config()
+        .map(|c| c.cli_viewer)
+        .unwrap_or_else(default_cli_viewer)
 }
 
 impl ServerConfig {
@@ -137,6 +206,10 @@ mod tests {
             listen: "127.0.0.1:9000".into(),
             url: Some("http://192.168.1.5:9000".into()),
             viewer_secret: Some("hush".into()),
+            default_notebook: "journal".into(),
+            editor: Some("code -w".into()),
+            cli_viewer: "bat -l md".into(),
+            viewer: false,
         };
         std::fs::write(&path, serde_json::to_string(&cfg).unwrap()).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
@@ -144,6 +217,10 @@ mod tests {
         assert_eq!(back.listen, "127.0.0.1:9000");
         assert_eq!(back.url.as_deref(), Some("http://192.168.1.5:9000"));
         assert_eq!(back.viewer_secret.as_deref(), Some("hush"));
+        assert_eq!(back.default_notebook, "journal");
+        assert_eq!(back.editor.as_deref(), Some("code -w"));
+        assert_eq!(back.cli_viewer, "bat -l md");
+        assert!(!back.viewer);
     }
 
     #[test]
@@ -153,6 +230,38 @@ mod tests {
         assert_eq!(cfg.listen, "0.0.0.0:7780");
         assert!(cfg.url.is_none());
         assert!(cfg.viewer_secret.is_none());
+        assert_eq!(cfg.default_notebook, "default");
+        assert!(cfg.editor.is_none());
+        assert_eq!(cfg.cli_viewer, "mdless");
+        assert!(cfg.viewer);
+    }
+
+    #[test]
+    fn server_config_parses_new_keys() {
+        let cfg: ServerConfig = serde_json::from_str(
+            r#"{"default_notebook": "work", "editor": "code -w", "viewer": false}"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.default_notebook, "work");
+        assert_eq!(cfg.editor.as_deref(), Some("code -w"));
+        assert!(!cfg.viewer);
+        assert_eq!(cfg.listen, "0.0.0.0:7780");
+    }
+
+    #[test]
+    fn cli_viewer_can_be_emptied() {
+        let cfg: ServerConfig = serde_json::from_str(r#"{"cli_viewer": ""}"#).unwrap();
+        assert_eq!(cfg.cli_viewer, "");
+    }
+
+    #[test]
+    fn server_config_omits_url_when_unset() {
+        let text = serde_json::to_string(&ServerConfig::default()).unwrap();
+        assert!(!text.contains("url"));
+        assert!(!text.contains("editor"));
+        assert!(text.contains("\"viewer\":true"));
+        assert!(text.contains("\"default_notebook\":\"default\""));
+        assert!(text.contains("\"cli_viewer\":\"mdless\""));
     }
 
     #[test]
@@ -161,11 +270,5 @@ mod tests {
             serde_json::from_str(r#"{"url": "http://192.168.1.5:7780"}"#).unwrap();
         assert_eq!(cfg.url.as_deref(), Some("http://192.168.1.5:7780"));
         assert_eq!(cfg.listen, "0.0.0.0:7780");
-    }
-
-    #[test]
-    fn server_config_omits_url_when_unset() {
-        let text = serde_json::to_string(&ServerConfig::default()).unwrap();
-        assert!(!text.contains("url"));
     }
 }

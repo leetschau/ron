@@ -422,7 +422,14 @@ mod notes_cmd {
     use ron::models::Note;
 
     pub fn add() -> Result<()> {
-        let body = ron::editor::edit("Title: \nTags: \nNotebook: default\n\n------\n\n")?;
+        // The server is the authority for the default notebook; the local
+        // server.json value is only a fallback (server unreachable / no
+        // token yet).
+        let notebook = client::server_default_notebook()
+            .unwrap_or_else(|_| ron::paths::read_default_notebook());
+        let body = ron::editor::edit(&format!(
+            "Title: \nTags: \nNotebook: {notebook}\n\n------\n\n"
+        ))?;
         let parsed = parse_editor_buffer(&body)?;
         let note = client::create_note(&parsed.title, parsed.tags, &parsed.notebook, &parsed.body)?;
         println!("created {}", note.id);
@@ -464,15 +471,56 @@ mod notes_cmd {
     pub fn view(target: String) -> Result<()> {
         let id = resolve_target(&target)?;
         let note = client::get_note(&id)?;
-        println!("Title: {}", note.title);
-        println!("Tags: {}", note.tags.join("; "));
-        println!("Notebook: {}", note.notebook);
-        println!("Related: {}", note.related.join("; "));
-        println!("Created: {}", note.created.format("%F %T"));
-        println!("Updated: {}", note.updated.format("%F %T"));
-        println!("ID: {}", note.id);
-        println!();
-        println!("{}", note.body);
+        let text = format!(
+            "Title: {}\nTags: {}\nNotebook: {}\nRelated: {}\nCreated: {}\nUpdated: {}\nID: {}\n\n{}",
+            note.title,
+            note.tags.join("; "),
+            note.notebook,
+            note.related.join("; "),
+            note.created.format("%F %T"),
+            note.updated.format("%F %T"),
+            note.id,
+            note.body,
+        );
+        run_cli_viewer(&text)
+    }
+
+    /// Pipe `text` through the configured `cli_viewer` command (default
+    /// `mdless`; see `server.json`). An empty command prints raw. If the
+    /// command can't be spawned (e.g. not installed), fall back to raw
+    /// printing with a warning on stderr.
+    fn run_cli_viewer(text: &str) -> Result<()> {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let cmd = ron::paths::read_cli_viewer();
+        let parts = ron::editor::split_cmd(&cmd);
+        let Some((prog, args)) = parts.split_first() else {
+            println!("{text}");
+            return Ok(());
+        };
+        let child = Command::new(prog)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn();
+        let mut child = match child {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("warning: could not spawn cli_viewer {prog:?} ({e}); printing raw note");
+                println!("{text}");
+                return Ok(());
+            }
+        };
+        // Take stdin before awaiting so the child never blocks on a pipe we
+        // still hold; the Option is dropped (closed) after writing.
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(text.as_bytes())?;
+        }
+        let status = child.wait()?;
+        if !status.success() {
+            return Err(anyhow!("cli_viewer {prog} exited with {status}"));
+        }
         Ok(())
     }
 

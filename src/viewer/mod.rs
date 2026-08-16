@@ -243,8 +243,16 @@ fn note_form_html(
     )
 }
 
-async fn note_new_get() -> ApiResult<Html<String>> {
-    let form = note_form_html("/notes/new", "", "", "default", "", "", "create");
+async fn note_new_get(State(state): State<AppState>) -> ApiResult<Html<String>> {
+    let form = note_form_html(
+        "/notes/new",
+        "",
+        "",
+        &state.inner.default_notebook,
+        "",
+        "",
+        "create",
+    );
     let body = format!("<h1>New note</h1>\n{form}");
     Ok(Html(page("new note", &body)))
 }

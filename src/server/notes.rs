@@ -126,7 +126,7 @@ pub async fn create_note_inner(state: &AppState, body: CreateBody) -> ApiResult<
         title: body.title,
         tags: body.tags,
         notebook: if body.notebook.is_empty() {
-            "default".into()
+            state.inner.default_notebook.clone()
         } else {
             body.notebook
         },

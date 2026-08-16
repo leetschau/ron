@@ -6,7 +6,7 @@ a complete reference; for the auth/security model behind the credentials see
 
 | Path | What it is | Format | Written by |
 |------|------------|--------|------------|
-| `~/.config/ron/server.json` | listen address, optional viewer gate, CLI `url` fallback | JSON | `ron serve` (defaults); user-edits for `viewer_secret` / `url` |
+| `~/.config/ron/server.json` | listen address, optional viewer gate/off switch, CLI `url` fallback, `default_notebook`, `editor` | JSON | `ron serve` (defaults); user-edits for the rest |
 | `~/.config/ron/tokens.json` | server-side store of API token hashes | JSON | server (`ron token grant` / `revoke`) |
 | `~/.config/ron/cli-token.json` | raw API secret this machine sends | JSON | `ron token grant` |
 | `~/.local/share/ron/db.sqlite3` | SQLite working store | binary | server, always |
@@ -31,7 +31,11 @@ machine-specific settings are never committed or synced.
 {
   "listen": "0.0.0.0:7780",
   "url": "http://192.168.1.5:7780",
-  "viewer_secret": "optional passphrase"
+  "viewer_secret": "optional passphrase",
+  "default_notebook": "default",
+  "editor": "nvim",
+  "cli_viewer": "mdless",
+  "viewer": true
 }
 ```
 
@@ -47,6 +51,27 @@ machine-specific settings are never committed or synced.
   require a `ron_viewer` cookie obtained via `/?key=<secret>` or `/login`. When
   absent, the viewer is open to anyone who can reach the port. Print the
   configured value with `ron viewer-key`.
+- **`default_notebook`** (string, default `"default"`): notebook assigned when
+  a note is created without one. The **server is the authority**: it applies
+  the value server-side on empty-notebook creates (`create_note_inner`,
+  `src/server/notes.rs`), prefills the viewer's create form from it, and
+  exposes it at `GET /api/config` so the CLI's `ron add` template uses the
+  *server's* value even when the local `server.json` differs (local value is
+  only an offline fallback; see `client::server_default_notebook`).
+- **`editor`** (string, optional): editor command for `ron add` / `ron edit`;
+  may include arguments (`"code -w"`, `"helix"`). Precedence: this key →
+  `$EDITOR` → `nvim` (`editor::resolve_editor`, `src/editor.rs`). CLI-side
+  only — the server ignores it. Read without creating files, so a remote CLI
+  host with no config is fine.
+- **`cli_viewer`** (string, default `"mdless"`): command `ron view` pipes
+  the formatted note (header lines + body) through on stdin; stdout/stderr
+  are inherited so pagers and colors work. Args allowed (`"bat -l md"`).
+  Set `""` to get the raw cat-style print back. If the command can't be
+  spawned (not installed), `ron view` warns and falls back to the raw print.
+  CLI-side only — the server ignores it.
+- **`viewer`** (bool, default `true`): serve the browser viewer (HTML routes
+  and `/resources/*`)? `false` mounts the JSON API and `/healthz` only — for
+  headless/CLI-only servers. Implies the `viewer_secret` gate is moot.
 
 Lifecycle: `ron serve` creates the file with defaults on first start if it's
 absent (`ServerConfig::load`, `src/paths.rs`). It's safe to edit by hand at
