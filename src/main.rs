@@ -6,6 +6,7 @@
 //!   - `token grant|list|revoke`          bearer-token management
 //!   - `viewer-key`                       print the viewer passphrase
 //!   - Notes:   add / edit / delete / view / list / search / relate
+//!   - Drafts:  draft edit|list|clear     note-edit recovery cache
 //!   - Pulses:  padd / pcheck / puncheck / plist / pedit / pdel
 //!   - Metrics: madd / mlog / mstats / mlist / medit / mdel
 
@@ -23,6 +24,12 @@ fn main() -> Result<()> {
         Some(("add", _)) => notes_cmd::add(),
         Some(("edit", sub)) => notes_cmd::edit(index_or_id(sub)),
         Some(("delete", sub)) => notes_cmd::delete(index_or_id(sub)),
+        Some(("draft", sub)) => match sub.subcommand() {
+            Some(("edit", m)) => drafts_cmd::edit(m.get_one::<String>("key").unwrap().clone()),
+            Some(("list", _)) => drafts_cmd::list(),
+            Some(("clear", m)) => drafts_cmd::clear(m.get_one::<String>("key").cloned()),
+            _ => unreachable!("subcommand_required prevents None"),
+        },
         Some(("view", sub)) => notes_cmd::view(index_or_id(sub)),
         Some(("list", sub)) => {
             let n: u32 = sub.get_one::<String>("number").map(|s| s.parse().unwrap_or(5)).unwrap_or(5);
@@ -180,6 +187,22 @@ fn parse_args() -> clap::ArgMatches {
                 .about("add related note IDs to a note")
                 .arg(Arg::new("id").required(true).help("note ID"))
                 .arg(Arg::new("to").required(true).num_args(1..).help("note ID(s) to relate")),
+        )
+        .subcommand(
+            Command::new("draft")
+                .about("manage note drafts (recovery cache for interrupted create/edit)")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("edit")
+                        .about("edit a draft in $EDITOR without creating a note")
+                        .arg(Arg::new("key").default_value("new").help("new | note:<id>")),
+                )
+                .subcommand(Command::new("list").about("list cached drafts (server + local)"))
+                .subcommand(
+                    Command::new("clear")
+                        .about("delete draft(s); omit the key to clear all")
+                        .arg(Arg::new("key").help("new | note:<id> (default: all)")),
+                ),
         )
         // ---- pulses ----
         .subcommand(
@@ -419,7 +442,8 @@ fn json_or_err<T: for<'de> serde::Deserialize<'de>>(resp: reqwest::blocking::Res
 mod notes_cmd {
     use super::*;
     use ron::client;
-    use ron::models::Note;
+    use ron::models::{DraftContent, Note};
+    use ron::editor::EditOutcome;
 
     pub fn add() -> Result<()> {
         // The server is the authority for the default notebook; the local
@@ -427,19 +451,45 @@ mod notes_cmd {
         // token yet).
         let notebook = client::server_default_notebook()
             .unwrap_or_else(|_| ron::paths::read_default_notebook());
-        let body = ron::editor::edit(&format!(
-            "Title: \nTags: \nNotebook: {notebook}\n\n------\n\n"
-        ))?;
-        let parsed = parse_editor_buffer(&body)?;
-        let note = client::create_note(&parsed.title, parsed.tags, &parsed.notebook, &parsed.body)?;
-        println!("created {}", note.id);
-        Ok(())
+        let mut initial = format!("Title: \nTags: \nNotebook: {notebook}\n\n------\n\n");
+        let mut from_draft = false;
+        if let Some(d) = resolve_draft("new") {
+            eprintln!(
+                "prefilling draft saved at {} (discard with `ron draft clear new`)",
+                d.updated.format("%Y-%m-%d %H:%M")
+            );
+            initial = d.buffer;
+            from_draft = true;
+        }
+        let outcome = ron::editor::edit(&initial)?;
+        finish_edit_session("new", &outcome, &initial, from_draft, |parsed| {
+            let note =
+                client::create_note(&parsed.title, parsed.tags, &parsed.notebook, &parsed.body)?;
+            Ok(format!("created {}", note.id))
+        })
     }
 
     pub fn edit(target: String) -> Result<()> {
         let id = resolve_target(&target)?;
-        let note = client::get_note(&id)?;
-        let initial = format!(
+        let key = format!("note:{id}");
+        // Offline fallback: if the note can't be fetched but a cached draft
+        // exists, keep working on the draft (it can only be cached back).
+        let note = match client::get_note(&id) {
+            Ok(n) => n,
+            Err(e) => {
+                let local = client::drafts_file()
+                    .ok()
+                    .and_then(|p| client::load_local_draft(&p, &key));
+                let Some(local) = local else { return Err(e) };
+                eprintln!("warning: server unreachable ({e:#}); opening the cached draft");
+                let initial = local.content;
+                let outcome = ron::editor::edit(&initial)?;
+                return finish_edit_session(&key, &outcome, &initial, true, |_parsed| {
+                    Err(anyhow!("update failed: server unreachable ({e:#})"))
+                });
+            }
+        };
+        let mut initial = format!(
             "Title: {}\nTags: {}\nNotebook: {}\nRelated: {}\n\n------\n\n{}",
             note.title,
             note.tags.join("; "),
@@ -447,18 +497,29 @@ mod notes_cmd {
             note.related.join("; "),
             note.body,
         );
-        let new_text = ron::editor::edit(&initial)?;
-        let parsed = parse_editor_buffer(&new_text)?;
-        let updated = client::update_note(
-            &note.id,
-            Some(parsed.title),
-            Some(parsed.tags),
-            Some(parsed.notebook),
-            Some(parsed.body),
-            Some(note.related),
-        )?;
-        println!("updated {}", updated.id);
-        Ok(())
+        let mut from_draft = false;
+        if let Some(d) = resolve_draft(&key).filter(|d| d.updated > note.updated) {
+            eprintln!(
+                "prefilling draft saved at {} (discard with `ron draft clear {key}`)",
+                d.updated.format("%Y-%m-%d %H:%M")
+            );
+            initial = d.buffer;
+            from_draft = true;
+        }
+        let outcome = ron::editor::edit(&initial)?;
+        let id = note.id.clone();
+        let related = note.related.clone();
+        finish_edit_session(&key, &outcome, &initial, from_draft, move |parsed| {
+            let updated = client::update_note(
+                &id,
+                Some(parsed.title),
+                Some(parsed.tags),
+                Some(parsed.notebook),
+                Some(parsed.body),
+                Some(related),
+            )?;
+            Ok(format!("updated {}", updated.id))
+        })
     }
 
     pub fn delete(target: String) -> Result<()> {
@@ -576,6 +637,7 @@ mod notes_cmd {
         title: String,
         tags: Vec<String>,
         notebook: String,
+        related: Vec<String>,
         body: String,
     }
 
@@ -585,14 +647,17 @@ mod notes_cmd {
         let title = strip_field(title_line, "Title:").trim().to_string();
         let tags_line = lines.next().unwrap_or("");
         let tags_str = strip_field(tags_line, "Tags:").trim();
-        let tags = if tags_str.is_empty() {
-            Vec::new()
-        } else {
-            tags_str.split(";").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
-        };
+        let tags = split_semis(tags_str);
         let nb_line = lines.next().unwrap_or("");
         let notebook = strip_field(nb_line, "Notebook:").trim().to_string();
-        // Skip the optional "Related:" line if present, and the divider.
+        // The optional "Related:" line, when present (edit sessions only).
+        let related_line = lines.next().unwrap_or("");
+        let related = if related_line.starts_with("Related:") {
+            split_semis(strip_field(related_line, "Related:").trim())
+        } else {
+            Vec::new()
+        };
+        // Skip anything else before the divider.
         let mut body_lines: Vec<&str> = Vec::new();
         let mut saw_fence = false;
         for line in lines {
@@ -611,8 +676,209 @@ mod notes_cmd {
             title,
             tags,
             notebook,
+            related,
             body: body_lines.join("\n"),
         })
+    }
+
+    fn split_semis(s: &str) -> Vec<String> {
+        if s.is_empty() {
+            Vec::new()
+        } else {
+            s.split(';').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect()
+        }
+    }
+
+    // ---- draft cache ----
+
+    /// The newest usable draft for `key`, as an editor buffer. Consults the
+    /// server first (canonical), drops watermarked local copies (already
+    /// saved as a note elsewhere), pushes a newer local copy up
+    /// (sync-on-touch), and falls back to the local copy offline.
+    pub struct ResolvedDraft {
+        pub buffer: String,
+        pub updated: chrono::NaiveDateTime,
+    }
+
+    pub fn resolve_draft(key: &str) -> Option<ResolvedDraft> {
+        let local_path = client::drafts_file().ok()?;
+        let mut local = client::load_local_draft(&local_path, key);
+        let info = match client::get_draft(key) {
+            Ok(info) => info,
+            Err(_) => {
+                // Server unreachable: local copy is all we have.
+                return local.map(|l| ResolvedDraft { buffer: l.content, updated: l.saved_at });
+            }
+        };
+
+        // Watermark: a local copy at or below the consumed timestamp was
+        // already saved as a note (possibly from another machine) — drop it.
+        if let Some(wm) = info.consumed_updated {
+            if local.as_ref().map_or(false, |l| l.saved_at <= wm) {
+                let _ = client::drop_local_draft(&local_path, key);
+                local = None;
+            }
+        }
+
+        // Sync-on-touch: a local copy newer than the server's live draft
+        // goes up so other devices can see it.
+        let mut server_draft = info.draft;
+        if let Some(l) = &local {
+            let newer = server_draft.as_ref().map_or(true, |d| l.saved_at > d.updated);
+            if newer {
+                if let Ok(parsed) = parse_editor_buffer(&l.content) {
+                    let content = DraftContent {
+                        title: parsed.title,
+                        tags: parsed.tags,
+                        notebook: parsed.notebook,
+                        related: parsed.related,
+                        body: parsed.body,
+                    };
+                    if let Ok(pushed) = client::save_draft(key, &content) {
+                        server_draft = Some(pushed);
+                        local = None;
+                    }
+                }
+            }
+        }
+
+        match (server_draft, local) {
+            (Some(d), Some(l)) if l.saved_at > d.updated => {
+                Some(ResolvedDraft { buffer: l.content, updated: l.saved_at })
+            }
+            (Some(d), _) => Some(ResolvedDraft {
+                buffer: draft_to_buffer(&d.content),
+                updated: d.updated,
+            }),
+            (None, Some(l)) => Some(ResolvedDraft { buffer: l.content, updated: l.saved_at }),
+            (None, None) => None,
+        }
+    }
+
+    /// Render structured draft content back into the editor-buffer format.
+    pub fn draft_to_buffer(c: &DraftContent) -> String {
+        format!(
+            "Title: {}\nTags: {}\nNotebook: {}\nRelated: {}\n\n------\n\n{}",
+            c.title,
+            c.tags.join("; "),
+            c.notebook,
+            c.related.join("; "),
+            c.body,
+        )
+    }
+
+    /// Cache `buffer` as the draft for `key`: locally always (offline
+    /// safety net), to the server best-effort (cross-device reach).
+    /// Returns the local save timestamp.
+    pub fn save_draft_everywhere(key: &str, buffer: &str) -> chrono::NaiveDateTime {
+        let ts = client::drafts_file()
+            .and_then(|p| client::store_local_draft(&p, key, buffer))
+            .unwrap_or_else(|e| {
+                eprintln!("warning: local draft cache failed: {e:#}");
+                chrono::Local::now().naive_local()
+            });
+        if let Ok(parsed) = parse_editor_buffer(buffer) {
+            let content = DraftContent {
+                title: parsed.title,
+                tags: parsed.tags,
+                notebook: parsed.notebook,
+                related: parsed.related,
+                body: parsed.body,
+            };
+            if let Err(e) = client::save_draft(key, &content) {
+                eprintln!("note: draft not pushed to the server ({e:#}); cached locally");
+            }
+        }
+        ts
+    }
+
+    /// Drop this machine's local copy of the draft. The server side is
+    /// consumed automatically by the successful note write.
+    pub fn drop_local_draft_quietly(key: &str) {
+        if let Ok(p) = client::drafts_file() {
+            if let Err(e) = client::drop_local_draft(&p, key) {
+                eprintln!("warning: dropping local draft failed: {e:#}");
+            }
+        }
+    }
+
+    /// How to pick this draft back up, for user-facing hints.
+    fn recover_hint(key: &str) -> String {
+        if key == "new" {
+            "`ron add`".to_string()
+        } else {
+            format!("`ron edit {}`", key.strip_prefix("note:").unwrap_or(key))
+        }
+    }
+
+    /// Shared tail of `add`/`edit`: classify the editor outcome and either
+    /// no-op (empty buffer / untouched fresh template), cache a draft
+    /// (`:cq`-style exit or empty title), or submit through `save`. An
+    /// untouched *draft* prefill that already has a title is submitted —
+    /// quitting the editor means "yes, save it as a note". On submit
+    /// failure the buffer is cached as a draft and the error gains a
+    /// recovery hint.
+    fn finish_edit_session(
+        key: &str,
+        outcome: &EditOutcome,
+        initial: &str,
+        from_draft: bool,
+        save: impl FnOnce(ParsedNote) -> Result<String>,
+    ) -> Result<()> {
+        let text = outcome.text();
+        if text.trim().is_empty() {
+            return Ok(());
+        }
+        let unchanged = text.trim() == initial.trim();
+        if unchanged {
+            // Fresh template untouched: silent no-op.
+            if !from_draft || matches!(outcome, EditOutcome::ExitedNonzero(_)) {
+                return Ok(());
+            }
+            // Untouched draft prefill: committing it as-is is the natural
+            // "recover and save" gesture — but only when it has a title.
+            let parsed = parse_editor_buffer(text)?;
+            if parsed.title.trim().is_empty() {
+                return Ok(());
+            }
+            return submit_or_cache(key, text, parsed, save);
+        }
+        let parsed = parse_editor_buffer(text)?;
+        let wants_draft =
+            matches!(outcome, EditOutcome::ExitedNonzero(_)) || parsed.title.trim().is_empty();
+        if wants_draft {
+            let ts = save_draft_everywhere(key, text);
+            println!(
+                "draft saved ({key}) at {} — continue with {}, discard with `ron draft clear {key}`",
+                ts.format("%Y-%m-%d %H:%M"),
+                recover_hint(key),
+            );
+            return Ok(());
+        }
+        submit_or_cache(key, text, parsed, save)
+    }
+
+    fn submit_or_cache(
+        key: &str,
+        text: &str,
+        parsed: ParsedNote,
+        save: impl FnOnce(ParsedNote) -> Result<String>,
+    ) -> Result<()> {
+        match save(parsed) {
+            Ok(msg) => {
+                drop_local_draft_quietly(key);
+                println!("{msg}");
+                Ok(())
+            }
+            Err(e) => {
+                let ts = save_draft_everywhere(key, text);
+                Err(anyhow!(
+                    "{e:#}\ndraft cached ({key}) at {} — rerun {} to recover it once the server is reachable",
+                    ts.format("%Y-%m-%d %H:%M"),
+                    recover_hint(key),
+                ))
+            }
+        }
     }
 
     fn strip_field<'a>(line: &'a str, prefix: &str) -> &'a str {
@@ -681,6 +947,170 @@ mod notes_cmd {
             out.push('…');
             out
         }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn content() -> DraftContent {
+            DraftContent {
+                title: "Hello world".into(),
+                tags: vec!["a".into(), "b".into()],
+                notebook: "nb".into(),
+                related: vec!["note-1".into(), "note-2".into()],
+                body: "# heading\n\nsome text".into(),
+            }
+        }
+
+        #[test]
+        fn draft_buffer_round_trip() {
+            let buffer = draft_to_buffer(&content());
+            let parsed = parse_editor_buffer(&buffer).unwrap();
+            assert_eq!(parsed.title, "Hello world");
+            assert_eq!(parsed.tags, vec!["a".to_string(), "b".to_string()]);
+            assert_eq!(parsed.notebook, "nb");
+            assert_eq!(parsed.related, vec!["note-1".to_string(), "note-2".to_string()]);
+            assert_eq!(parsed.body, "# heading\n\nsome text");
+        }
+
+        #[test]
+        fn parser_handles_add_template_without_related_line() {
+            // The `ron add` template has no Related: line.
+            let parsed =
+                parse_editor_buffer("Title: t\nTags: x\nNotebook: nb\n\n------\n\nbody").unwrap();
+            assert!(parsed.related.is_empty());
+            assert_eq!(parsed.body, "body");
+        }
+
+        #[test]
+        fn empty_title_and_untouched_template_classify_as_noop_or_draft() {
+            // Mirror the classification in finish_edit_session.
+            let initial = "Title: \nTags: \nNotebook: default\n\n------\n\n";
+            let unchanged = EditOutcome::Saved(initial.to_string());
+            assert!(unchanged.text().trim() == initial.trim()); // noop branch
+
+            let typed_no_title =
+                EditOutcome::Saved("Title: \nTags: \nNotebook: default\n\n------\n\nthoughts".into());
+            let parsed = parse_editor_buffer(typed_no_title.text()).unwrap();
+            assert!(parsed.title.trim().is_empty()); // would take the draft branch
+            assert!(!typed_no_title.text().trim().is_empty());
+        }
+    }
+}
+
+// ----- draft commands -----
+
+mod drafts_cmd {
+    use super::notes_cmd::{draft_to_buffer, resolve_draft, save_draft_everywhere};
+    use super::*;
+    use ron::client;
+
+    pub fn edit(key: String) -> Result<()> {
+        if !ron::models::valid_draft_key(&key) {
+            return Err(anyhow!("invalid draft key {key:?}; use `new` or `note:<id>`"));
+        }
+        let initial = match resolve_draft(&key) {
+            Some(d) => d.buffer,
+            None => {
+                let nb = client::server_default_notebook()
+                    .unwrap_or_else(|_| ron::paths::read_default_notebook());
+                draft_to_buffer(&ron::models::DraftContent {
+                    notebook: nb,
+                    ..Default::default()
+                })
+            }
+        };
+        let outcome = ron::editor::edit(&initial)?;
+        let text = outcome.text();
+        if text.trim().is_empty() || text.trim() == initial.trim() {
+            println!("(no changes; draft untouched)");
+            return Ok(());
+        }
+        // Any exit saves the draft here — that's the whole point of the
+        // command; there is no note to create.
+        let ts = save_draft_everywhere(&key, text);
+        println!(
+            "draft saved ({key}) at {} — resume with `ron add`/`ron edit`, discard with `ron draft clear {key}`",
+            ts.format("%Y-%m-%d %H:%M"),
+        );
+        Ok(())
+    }
+
+    pub fn list() -> Result<()> {
+        let server = client::list_drafts().unwrap_or_else(|e| {
+            eprintln!("(server unreachable: {e:#}; showing local drafts only)");
+            Vec::new()
+        });
+        let local_path = client::drafts_file()?;
+        let local = client::load_all_local_drafts(&local_path);
+        let mut keys: Vec<String> = server.iter().map(|d| d.key.clone()).collect();
+        for k in local.keys() {
+            if !keys.contains(k) {
+                keys.push(k.clone());
+            }
+        }
+        keys.sort();
+        if keys.is_empty() {
+            println!("(no drafts)");
+            return Ok(());
+        }
+        println!("{:<28}  {:<19}  {:<13}  {}", "key", "saved", "where", "title");
+        for k in &keys {
+            let sd = server.iter().find(|d| &d.key == k);
+            let ld = local.get(k);
+            let Some((ts, whr, title)) = sd.map(|d| (d.updated, "server", d.content.title.clone())).or_else(|| {
+                ld.map(|l| (l.saved_at, "local", title_of_buffer(&l.content)))
+            }) else {
+                continue;
+            };
+            let whr = if sd.is_some() && ld.is_some() { "server+local" } else { whr };
+            println!(
+                "{:<28}  {:<19}  {:<13}  {}",
+                k,
+                ts.format("%Y-%m-%d %H:%M:%S"),
+                whr,
+                title,
+            );
+        }
+        Ok(())
+    }
+
+    fn title_of_buffer(buf: &str) -> String {
+        buf.lines()
+            .next()
+            .unwrap_or("")
+            .strip_prefix("Title: ")
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    }
+
+    pub fn clear(key: Option<String>) -> Result<()> {
+        let local_path = client::drafts_file()?;
+        match &key {
+            Some(k) => {
+                if !ron::models::valid_draft_key(k) {
+                    return Err(anyhow!("invalid draft key {k:?}; use `new` or `note:<id>`"));
+                }
+                let removed_local = client::drop_local_draft(&local_path, k)?;
+                let removed_server = client::delete_draft(k).is_ok();
+                if removed_local || removed_server {
+                    println!("cleared {k}");
+                } else {
+                    println!("(no draft for {k})");
+                }
+            }
+            None => {
+                client::clear_local_drafts(&local_path)?;
+                let live = client::list_drafts().unwrap_or_default();
+                for d in live {
+                    let _ = client::delete_draft(&d.key);
+                }
+                println!("cleared all drafts");
+            }
+        }
+        Ok(())
     }
 }
 

@@ -24,9 +24,30 @@ pub fn split_cmd(s: &str) -> Vec<String> {
     s.split_whitespace().map(str::to_string).collect()
 }
 
-/// Open `initial` content in the user's editor. Returns what the buffer
-/// contained when the editor exited.
-pub fn edit(initial: &str) -> Result<String> {
+/// How the editor session ended. A non-zero exit (`:cq` in vim/nvim, or a
+/// crash) still returns the buffer — ron treats it as "save as draft"
+/// intent rather than discarding the user's typing.
+#[derive(Debug, Clone)]
+pub enum EditOutcome {
+    /// Editor exited 0.
+    Saved(String),
+    /// Editor exited non-zero; the buffer as last written.
+    ExitedNonzero(String),
+}
+
+impl EditOutcome {
+    /// The buffer contents regardless of exit status.
+    pub fn text(&self) -> &str {
+        match self {
+            EditOutcome::Saved(t) | EditOutcome::ExitedNonzero(t) => t,
+        }
+    }
+}
+
+/// Open `initial` content in the user's editor. Returns how the session
+/// ended plus what the buffer contained. Spawning the editor at all still
+/// fails hard (misconfigured `editor` key, binary not found).
+pub fn edit(initial: &str) -> Result<EditOutcome> {
     let cmd = resolve_editor();
     let (prog, args) = cmd.split_first().ok_or_else(|| anyhow!("empty editor command"))?;
     let mut tmp = tempfile::Builder::new()
@@ -43,11 +64,12 @@ pub fn edit(initial: &str) -> Result<String> {
         .arg(&path)
         .status()
         .with_context(|| format!("spawning editor {prog}"))?;
-    if !status.success() {
-        return Err(anyhow!("editor {prog} exited with {status}"));
-    }
     let text = std::fs::read_to_string(&path)?;
-    Ok(text)
+    if status.success() {
+        Ok(EditOutcome::Saved(text))
+    } else {
+        Ok(EditOutcome::ExitedNonzero(text))
+    }
 }
 
 #[cfg(test)]

@@ -140,6 +140,7 @@ pub async fn create_note_inner(state: &AppState, body: CreateBody) -> ApiResult<
         db::upsert_note(&conn, &note)?;
     }
     persist_yaml(state, yaml::Item::Note(note.clone()))?;
+    consume_draft_best_effort(state, "new");
     Ok(note)
 }
 
@@ -196,7 +197,21 @@ pub async fn update_note_inner(
         db::upsert_note(&conn, &note)?;
     }
     persist_yaml(state, yaml::Item::Note(note.clone()))?;
+    consume_draft_best_effort(state, &format!("note:{id}"));
     Ok(note)
+}
+
+/// Mark the draft for `key` consumed (its note was saved). The note write
+/// already succeeded, so a failure here is only logged — the draft would
+/// just linger until `ron draft clear`.
+fn consume_draft_best_effort(state: &AppState, key: &str) {
+    let res = {
+        let conn = state.db();
+        db::consume_draft(&conn, key, Local::now().naive_local())
+    };
+    if let Err(e) = res {
+        eprintln!("warning: draft consume failed for {key}: {e}");
+    }
 }
 
 async fn delete(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult<Json<serde_json::Value>> {

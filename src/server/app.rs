@@ -8,7 +8,7 @@ use axum::Router;
 use tokio::net::TcpListener;
 
 use crate::paths::{Paths, ServerConfig};
-use crate::server::{admin, auth, metrics, notes, pulses, tokens, AppState};
+use crate::server::{admin, auth, drafts, metrics, notes, pulses, tokens, AppState};
 use crate::viewer;
 
 /// Build the full application router with the bearer-auth layer applied.
@@ -19,6 +19,7 @@ pub fn build(state: AppState) -> Router {
         .merge(notes::routes())
         .merge(pulses::routes())
         .merge(metrics::routes())
+        .merge(drafts::routes())
         .merge(admin::routes())
         .merge(tokens::routes())
         .layer(middleware::from_fn_with_state(
@@ -32,6 +33,7 @@ pub fn build(state: AppState) -> Router {
         .merge(api);
     let app = if state.inner.viewer_enabled {
         let viewer_routes = viewer::routes()
+            .merge(drafts::viewer_routes())
             .layer(middleware::from_fn_with_state(
                 state.clone(),
                 auth::require_viewer,

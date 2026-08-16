@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use chrono::{NaiveDate, NaiveDateTime};
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::models::{Interval, Metric, MetricPoint, Note, Pulse, PulseSlot};
+use crate::models::{Draft, DraftContent, Interval, Metric, MetricPoint, Note, Pulse, PulseSlot};
 
 pub const SCHEMA_VERSION: u32 = 1;
 
@@ -64,6 +64,16 @@ CREATE TABLE IF NOT EXISTS metric_points (
     value     REAL NOT NULL,
     PRIMARY KEY (metric_id, ts),
     FOREIGN KEY (metric_id) REFERENCES metrics(id) ON DELETE CASCADE
+);
+
+-- Transient note drafts (crash/network recovery cache). Never exported to
+-- YAML/git. A consumed row keeps its `updated` as a watermark so clients
+-- holding stale local copies can drop them; a fresh save revives the row.
+CREATE TABLE IF NOT EXISTS drafts (
+    key         TEXT PRIMARY KEY,        -- "new" | "note:<id>"
+    content     TEXT NOT NULL,           -- JSON DraftContent
+    updated     TEXT NOT NULL,           -- when the draft was last saved
+    consumed_at TEXT                     -- set when saved as a note
 );
 "#;
 
@@ -474,6 +484,91 @@ pub fn delete_metric(conn: &Connection, id: &str) -> Result<bool> {
     Ok(n > 0)
 }
 
+// ----- Drafts ----------------------------------------------------------------
+
+/// Save (or overwrite) a draft, stamping it live. Revives a consumed row.
+pub fn upsert_draft(conn: &Connection, key: &str, content: &DraftContent, updated: NaiveDateTime) -> Result<()> {
+    let content = serde_json::to_string(content)?;
+    conn.execute(
+        "INSERT INTO drafts (key, content, updated, consumed_at)
+         VALUES (?1, ?2, ?3, NULL)
+         ON CONFLICT(key) DO UPDATE SET
+            content=excluded.content, updated=excluded.updated, consumed_at=NULL",
+        params![key, content, ts_to_str(updated)],
+    )?;
+    Ok(())
+}
+
+/// Fetch a live (unconsumed) draft. Consumed rows return `None`.
+pub fn get_draft(conn: &Connection, key: &str) -> Result<Option<Draft>> {
+    let row = conn
+        .query_row(
+            "SELECT key, content, updated FROM drafts WHERE key = ?1 AND consumed_at IS NULL",
+            params![key],
+            |row| {
+                let content: String = row.get("content")?;
+                let updated: String = row.get("updated")?;
+                Ok(Draft {
+                    key: row.get("key")?,
+                    content: serde_json::from_str(&content).unwrap_or_default(),
+                    updated: ts_from_str(&updated).unwrap_or_else(|_| chrono::Local::now().naive_local()),
+                })
+            },
+        )
+        .optional()?;
+    Ok(row)
+}
+
+/// Mark a draft consumed (its note was saved). Keeps `updated` as the
+/// watermark for stale local copies on other machines. No-op when the key
+/// has no live row.
+pub fn consume_draft(conn: &Connection, key: &str, at: NaiveDateTime) -> Result<()> {
+    conn.execute(
+        "UPDATE drafts SET consumed_at = ?2 WHERE key = ?1 AND consumed_at IS NULL",
+        params![key, ts_to_str(at)],
+    )?;
+    Ok(())
+}
+
+/// The `updated` timestamp of the most recently consumed draft for `key`,
+/// if any. Local copies with `saved_at <= watermark` are stale.
+pub fn watermark_for(conn: &Connection, key: &str) -> Result<Option<NaiveDateTime>> {
+    let ts: Option<String> = conn
+        .query_row(
+            "SELECT updated FROM drafts WHERE key = ?1 AND consumed_at IS NOT NULL",
+            params![key],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(ts.and_then(|s| ts_from_str(&s).ok()))
+}
+
+/// All live drafts, newest first.
+pub fn list_drafts(conn: &Connection) -> Result<Vec<Draft>> {
+    let mut stmt =
+        conn.prepare("SELECT key, content, updated FROM drafts WHERE consumed_at IS NULL ORDER BY updated DESC")?;
+    let rows = stmt.query_map([], |row| {
+        let content: String = row.get("content")?;
+        let updated: String = row.get("updated")?;
+        Ok(Draft {
+            key: row.get("key")?,
+            content: serde_json::from_str(&content).unwrap_or_default(),
+            updated: ts_from_str(&updated).unwrap_or_else(|_| chrono::Local::now().naive_local()),
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// Hard-delete a draft row (watermark included). Used by discard/clear.
+pub fn delete_draft(conn: &Connection, key: &str) -> Result<bool> {
+    let n = conn.execute("DELETE FROM drafts WHERE key = ?1", params![key])?;
+    Ok(n > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -668,6 +763,52 @@ mod tests {
             )
             .unwrap();
         assert_eq!(v, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn draft_crud_consume_and_watermark() {
+        use crate::models::DraftContent;
+        let conn = conn();
+        let content = DraftContent {
+            title: "half-written".into(),
+            tags: vec!["wip".into()],
+            notebook: "default".into(),
+            related: vec![],
+            body: "thoughts…".into(),
+        };
+        assert!(get_draft(&conn, "new").unwrap().is_none());
+        assert!(watermark_for(&conn, "new").unwrap().is_none());
+
+        upsert_draft(&conn, "new", &content, now()).unwrap();
+        let d = get_draft(&conn, "new").unwrap().unwrap();
+        assert_eq!(d.key, "new");
+        assert_eq!(d.content.title, "half-written");
+        assert_eq!(list_drafts(&conn).unwrap().len(), 1);
+
+        // Consume: live read gone, watermark keeps the draft's `updated`.
+        consume_draft(&conn, "new", now()).unwrap();
+        assert!(get_draft(&conn, "new").unwrap().is_none());
+        assert!(list_drafts(&conn).unwrap().is_empty());
+        assert_eq!(watermark_for(&conn, "new").unwrap(), Some(now()));
+
+        // A fresh save revives the row (consumed_at reset).
+        let later = now() + chrono::Duration::hours(1);
+        upsert_draft(&conn, "new", &content, later).unwrap();
+        assert!(get_draft(&conn, "new").unwrap().is_some());
+        assert!(watermark_for(&conn, "new").unwrap().is_none());
+
+        // Hard delete removes everything, watermark included.
+        assert!(delete_draft(&conn, "new").unwrap());
+        assert!(get_draft(&conn, "new").unwrap().is_none());
+        assert!(watermark_for(&conn, "new").unwrap().is_none());
+        assert!(!delete_draft(&conn, "new").unwrap());
+    }
+
+    #[test]
+    fn consume_without_row_is_noop() {
+        let conn = conn();
+        consume_draft(&conn, "note:note-x", now()).unwrap();
+        assert!(watermark_for(&conn, "note:note-x").unwrap().is_none());
     }
 
     // suppress unused

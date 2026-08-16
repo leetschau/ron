@@ -10,6 +10,7 @@ a complete reference; for the auth/security model behind the credentials see
 | `~/.config/ron/tokens.json` | server-side store of API token hashes | JSON | server (`ron token grant` / `revoke`) |
 | `~/.config/ron/cli-token.json` | raw API secret this machine sends | JSON | `ron token grant` |
 | `~/.local/share/ron/db.sqlite3` | SQLite working store | binary | server, always |
+| `~/.local/share/ron/drafts.json` | CLI-side note-draft cache (recovery) | JSON | CLI (`ron add`/`edit`/`draft edit`) |
 | `~/.local/share/ron/repo/` | git repo of YAML — source of truth | YAML + git | server, every write commits |
 | `~/.local/share/ron/repo/resources/` | note attachments referenced as `resources/<name>` | any (images) | user (manual copy / git) |
 | `~/.local/share/ron/repo/.gitignore` | keeps SQLite out of the repo | text | server (auto, once) |
@@ -139,6 +140,31 @@ DB is **rebuildable**: on cold start, if all data tables are empty and YAML
 files exist, the server bootstraps from YAML (`bootstrap_from_yaml`,
 `src/server/mod.rs`). `ron import` / `ron sync` drop and reload every row
 from YAML (`rebuild_db_from_yaml`). Not git-tracked.
+
+The `drafts` table is the server-side half of the note-draft recovery cache
+(see below): one row per key (`new` / `note:<id>`), with `consumed_at`
+watermarks. Drafts are transient — never exported to YAML/git — and survive
+`import`/`sync` rebuilds, which only touch notes/pulses/metrics.
+
+### `drafts.json` — CLI-side draft cache
+
+`src/client.rs`. The offline safety net for `ron add`/`ron edit`: the raw
+editor buffer exactly as it was, per draft key. Schema:
+
+```json
+{
+  "new": { "content": "Title: …\nTags: …\n\n------\n\n…",
+           "saved_at": "2026-08-16T14:32:07" }
+}
+```
+
+Written whenever a create/update fails (network break) or the editor exits
+without a title / with `:cq`; also best-effort pushed to the server's
+`drafts` table so other devices can pick the draft up (`ron draft edit`,
+phone browser). Cleared when the note is saved. The server records a
+watermark at consume time, so stale local copies elsewhere are dropped
+automatically on next contact. Inspect/discard with `ron draft list` /
+`ron draft clear [key]`. Safe to delete by hand.
 
 ### `repo/` — git repo of YAML files
 

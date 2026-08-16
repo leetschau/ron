@@ -3,6 +3,7 @@
 pub mod admin;
 pub mod app;
 pub mod auth;
+pub mod drafts;
 pub mod error;
 pub mod metrics;
 pub mod notes;

@@ -137,6 +137,9 @@ ron search          [opts] PATTERN [PATTERN...]
                               #   -w, --whole      whole-word match
 ron list-notebook             # unique notebooks
 ron relate          <id> <to...>   # add related note IDs to a note
+ron draft edit      [key]     # edit a draft in $EDITOR (key: new | note:<id>)
+ron draft list                # show cached drafts (server + local)
+ron draft clear     [key]     # discard one draft / all drafts
 ```
 
 `list`/`search` print the note ID in its own column so you can pass it to
@@ -145,6 +148,23 @@ last listing instead of an ID; `view`/`edit`/`delete` default to `1` (most
 recent note). Short aliases: `a` add, `e` edit, `del` delete, `v` view,
 `l` list, `s` search, `lnb` list-notebook. From the browser, use the `+ new`
 link, and the edit/delete actions on each note.
+
+#### Drafts (recovery cache)
+
+Interrupted creates/edits are never lost. When `ron add`/`ron edit` cannot
+reach the server, or you leave the editor without a title, the buffer is
+cached as a **draft** — on this machine (`~/.local/share/ron/drafts.json`)
+and, best-effort, on the server — and prefilled next time:
+
+- `ron add` → `:cq` (non-zero editor exit) or an empty `Title:` saves the
+  buffer as a draft instead of creating the note; a byte-unchanged buffer
+  is a silent no-op
+- `ron edit <id>` works offline from the cached draft; a failed update
+  re-caches your buffer with a recovery hint
+- drafts sync across devices through the server (`ron draft edit` on the
+  laptop, then pick it up on the phone); once the note is saved from any
+  device, stale copies elsewhere are dropped automatically (watermark)
+- `ron draft list` inspects what's cached; `ron draft clear [key]` discards
 
 ### Pulses (recurring boolean trackers)
 
@@ -217,6 +237,14 @@ Open `http://127.0.0.1:7780/` for the notes index, and `/view/<note-id>` to
 read a rendered note (markdown + MathJax). `/search` offers incremental
 full-text search plus advanced filters (field, case, whole-word, updated-time
 range, order, limit).
+
+Note forms autosave drafts as you type (into the browser and, when
+reachable, onto the server). Use the **save draft** button to store one
+explicitly — it stays on the page with a `saved ✓` confirmation. The index
+shows a `draft in progress` banner linking back into the draft, and saving
+the note (from any device) consumes it. If a save fails mid-network-break,
+the form keeps your text on screen with a banner instead of navigating to
+an error page, and it's prefilled when you come back.
 
 Images and other attachments referenced as `resources/<file>` in note bodies
 are served from `~/.local/share/ron/repo/resources/` at `/resources/<file>`

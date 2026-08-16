@@ -13,7 +13,7 @@ use anyhow::{anyhow, Result};
 use reqwest::blocking::{Client, RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
 
-use crate::models::{Metric, Note, Pulse};
+use crate::models::{Draft, DraftContent, Metric, Note, Pulse};
 
 const DEFAULT_URL: &str = "http://127.0.0.1:7780";
 
@@ -254,6 +254,120 @@ pub fn list_notebooks() -> Result<Vec<String>> {
     Ok(nbs)
 }
 
+// ----- drafts ----------------------------------------------------------------
+
+/// Reply of `GET /api/drafts/:key`.
+#[derive(Debug, Deserialize)]
+pub struct DraftInfo {
+    pub draft: Option<Draft>,
+    /// `updated` of the most recently consumed draft for this key; local
+    /// copies with `saved_at <= consumed_updated` are stale and droppable.
+    #[serde(default)]
+    pub consumed_updated: Option<chrono::NaiveDateTime>,
+}
+
+/// Fetch the live server draft (if any) and the consume watermark.
+pub fn get_draft(key: &str) -> Result<DraftInfo> {
+    Api::get_json(&format!("/api/drafts/{}", urlencoding::encode_or_self(key)))
+}
+
+pub fn list_drafts() -> Result<Vec<Draft>> {
+    Api::get_json("/api/drafts")
+}
+
+/// Push a draft to the server. The server stamps `updated`; the returned
+/// draft carries that authoritative timestamp.
+pub fn save_draft(key: &str, content: &DraftContent) -> Result<Draft> {
+    Api::put_json_reply(&format!("/api/drafts/{}", urlencoding::encode_or_self(key)), &serde_json::to_value(content)?)
+}
+
+/// Hard-delete a draft on the server (watermark included).
+pub fn delete_draft(key: &str) -> Result<()> {
+    let resp = Api::delete(&format!("/api/drafts/{}", urlencoding::encode_or_self(key)))?;
+    if !resp.status().is_success() {
+        return Err(anyhow!("draft delete failed: HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
+// ----- local draft store -------------------------------------------------------
+
+/// One cached draft in `~/.local/share/ron/drafts.json`: the raw editor
+/// buffer exactly as it was, plus when it was saved.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LocalDraft {
+    pub content: String,
+    pub saved_at: chrono::NaiveDateTime,
+}
+
+/// Where the CLI caches drafts locally (offline fallback). Lives next to
+/// the DB, outside the git repo.
+pub fn drafts_file() -> Result<PathBuf> {
+    let dirs = directories::ProjectDirs::from("", "", "ron")
+        .ok_or_else(|| anyhow!("could not determine data dir"))?;
+    Ok(dirs.data_local_dir().join("drafts.json"))
+}
+
+fn read_local_store(path: &std::path::Path) -> std::collections::BTreeMap<String, LocalDraft> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn write_local_store(
+    path: &std::path::Path,
+    store: &std::collections::BTreeMap<String, LocalDraft>,
+) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, serde_json::to_string_pretty(store)?)?;
+    Ok(())
+}
+
+/// Read the local draft for `key` (raw editor buffer). `None` when absent.
+pub fn load_local_draft(path: &std::path::Path, key: &str) -> Option<LocalDraft> {
+    read_local_store(path).get(key).cloned()
+}
+
+/// Cache `buffer` as the local draft for `key`, stamping `saved_at` now.
+/// Returns the stamp.
+pub fn store_local_draft(path: &std::path::Path, key: &str, buffer: &str) -> Result<chrono::NaiveDateTime> {
+    let mut store = read_local_store(path);
+    let saved_at = chrono::Local::now().naive_local();
+    store.insert(
+        key.to_string(),
+        LocalDraft {
+            content: buffer.to_string(),
+            saved_at,
+        },
+    );
+    write_local_store(path, &store)?;
+    Ok(saved_at)
+}
+
+/// Remove the local draft for `key`; returns whether anything was removed.
+pub fn drop_local_draft(path: &std::path::Path, key: &str) -> Result<bool> {
+    let mut store = read_local_store(path);
+    let removed = store.remove(key).is_some();
+    if removed {
+        write_local_store(path, &store)?;
+    }
+    Ok(removed)
+}
+
+/// All local drafts (key -> entry), for `ron draft list` / `clear`.
+pub fn load_all_local_drafts(
+    path: &std::path::Path,
+) -> std::collections::BTreeMap<String, LocalDraft> {
+    read_local_store(path)
+}
+
+pub fn clear_local_drafts(path: &std::path::Path) -> Result<()> {
+    write_local_store(path, &std::collections::BTreeMap::new())
+}
+
 pub fn list_pulses(active_only: bool) -> Result<Vec<Pulse>> {
     let path = if active_only {
         "/api/pulses?active_only=true"
@@ -419,4 +533,48 @@ pub fn backup() -> Result<()> {
 
 pub fn sync() -> Result<SyncReport> {
     Api::post_json_reply("/api/sync", &serde_json::json!({}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_draft_store_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("drafts.json");
+        assert!(load_local_draft(&path, "new").is_none());
+
+        let ts = store_local_draft(&path, "new", "Title: hi\n\n------\n\nbody").unwrap();
+        let l = load_local_draft(&path, "new").unwrap();
+        assert_eq!(l.content, "Title: hi\n\n------\n\nbody");
+        assert_eq!(l.saved_at, ts);
+
+        // A second key coexists; dropping one leaves the other.
+        store_local_draft(&path, "note:note-1", "other").unwrap();
+        assert!(drop_local_draft(&path, "new").unwrap());
+        assert!(load_local_draft(&path, "new").is_none());
+        assert!(load_local_draft(&path, "note:note-1").is_some());
+        assert!(!drop_local_draft(&path, "new").unwrap());
+    }
+
+    #[test]
+    fn local_draft_store_survives_corrupt_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("drafts.json");
+        std::fs::write(&path, "not json{").unwrap();
+        assert!(load_local_draft(&path, "new").is_none());
+        store_local_draft(&path, "new", "ok").unwrap();
+        assert_eq!(load_local_draft(&path, "new").unwrap().content, "ok");
+    }
+
+    #[test]
+    fn clear_local_drafts_empties_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("drafts.json");
+        store_local_draft(&path, "new", "a").unwrap();
+        store_local_draft(&path, "note:note-1", "b").unwrap();
+        clear_local_drafts(&path).unwrap();
+        assert!(load_all_local_drafts(&path).is_empty());
+    }
 }

@@ -13,7 +13,7 @@ use chrono::Local;
 use serde::Deserialize;
 
 use crate::db;
-use crate::models::Note;
+use crate::models::{Draft, Note};
 use crate::server::error::{ApiError, ApiResult};
 use crate::server::AppState;
 
@@ -85,11 +85,21 @@ fn page(title: &str, body: &str) -> String {
 }
 
 async fn index(State(state): State<AppState>) -> ApiResult<Html<String>> {
-    let notes = {
+    let (notes, draft) = {
         let conn = state.db();
-        db::list_notes(&conn, Some(50))?
+        (db::list_notes(&conn, Some(50))?, db::get_draft(&conn, "new")?)
     };
-    let body = format!("<h1>ron</h1>\n{}", render_results(&notes, None));
+    let mut body = String::from("<h1>ron</h1>\n");
+    if let Some(d) = draft {
+        body.push_str(&draft_banner(
+            "new",
+            &d.updated.format("%Y-%m-%d %H:%M").to_string(),
+            "/",
+            Some("/notes/new"),
+        ));
+        body.push('\n');
+    }
+    body.push_str(&render_results(&notes, None));
     Ok(Html(page("ron", &body)))
 }
 
@@ -214,7 +224,9 @@ fn split_semi(s: &str) -> Vec<String> {
 }
 
 /// Render the shared note form. `action` is the POST target; submit_label is
-/// the button text ("create" or "save").
+/// the button text ("create" or "save"). `draft_key`/`draft_anchor` wire up
+/// the draft autosave + recovery JS (see DRAFT_JS); an empty key disables it.
+#[allow(clippy::too_many_arguments)]
 fn note_form_html(
     action: &str,
     title: &str,
@@ -223,16 +235,21 @@ fn note_form_html(
     related: &str,
     body: &str,
     submit_label: &str,
+    draft_key: &str,
+    draft_anchor: &str,
 ) -> String {
     format!(
-        r#"<form method="post" action="{action}">
+        r#"<form id="note-form" method="post" action="{action}" data-draft-key="{draft_key}" data-draft-anchor="{draft_anchor}">
   <label>title<br><input name="title" value="{title}" style="width:100%;padding:0.3em"></label><br>
   <label>tags<br><input name="tags" value="{tags}" placeholder="semicolon-separated" style="width:100%;padding:0.3em"></label><br>
   <label>notebook<br><input name="notebook" value="{notebook}" style="width:100%;padding:0.3em"></label><br>
   <label>related<br><input name="related" value="{related}" placeholder="related note IDs, semicolon-separated" style="width:100%;padding:0.3em"></label><br>
   body<br><textarea name="body" rows="22" style="width:100%;font-family:monospace;padding:0.3em">{body}</textarea><br>
   <button type="submit" style="padding:0.3em 0.8em;margin-top:0.4em">{submit_label}</button>
-</form>"#,
+  <button type="button" id="save-draft-btn" style="padding:0.3em 0.8em;margin-top:0.4em">save draft</button>
+  <div id="draft-msg" class="meta" style="margin-top:0.4em"></div>
+</form>
+{js}"#,
         action = html_escape::encode_double_quoted_attribute(action),
         title = html_escape::encode_double_quoted_attribute(title),
         tags = html_escape::encode_double_quoted_attribute(tags),
@@ -240,21 +257,175 @@ fn note_form_html(
         related = html_escape::encode_double_quoted_attribute(related),
         body = html_escape::encode_text(body),
         submit_label = submit_label,
+        draft_key = html_escape::encode_double_quoted_attribute(draft_key),
+        draft_anchor = html_escape::encode_double_quoted_attribute(draft_anchor),
+        js = if draft_key.is_empty() { String::new() } else { DRAFT_JS.to_string() },
     )
 }
 
+/// A draft should prefill the edit form only when it was saved after the
+/// note's last update — otherwise the note already contains its content.
+fn fresher_draft(draft: Option<Draft>, note_updated: chrono::NaiveDateTime) -> Option<Draft> {
+    draft.filter(|d| d.updated > note_updated)
+}
+
+/// The server-side draft timestamp to compare browser localStorage copies
+/// against: the live draft's `updated` when one exists, else the consume
+/// watermark, else "" (nothing known server-side).
+fn draft_anchor(draft: Option<&Draft>, watermark: Option<chrono::NaiveDateTime>) -> String {
+    draft
+        .map(|d| d.updated)
+        .or(watermark)
+        .map(|t| t.format("%Y-%m-%dT%H:%M:%S").to_string())
+        .unwrap_or_default()
+}
+
+/// "draft in progress" banner: shown on `/` (with an edit-draft link) and
+/// above forms prefill from a recovered draft. Discard also clears this
+/// browser's localStorage copy (only a JS session ever wrote one).
+fn draft_banner(key: &str, saved_at: &str, back: &str, edit_url: Option<&str>) -> String {
+    let edit = match edit_url {
+        Some(u) => format!("<a href=\"{u}\">edit draft</a> · ", u = html_escape::encode_double_quoted_attribute(u)),
+        None => String::new(),
+    };
+    format!(
+        "<div class=\"meta\" style=\"margin:0.6rem 0\">draft in progress (saved {saved_at}) — {edit}\
+         <form method=\"post\" action=\"/drafts/{key}/discard\" style=\"display:inline\" \
+         onsubmit=\"try{{localStorage.removeItem('ron-draft-{key}')}}catch(e){{}}\">\
+         <input type=\"hidden\" name=\"back\" value=\"{back}\">\
+         <button>discard</button></form></div>",
+        saved_at = html_escape::encode_text(saved_at),
+        key = html_escape::encode_text(key),
+        back = html_escape::encode_double_quoted_attribute(back),
+    )
+}
+
+const DRAFT_JS: &str = r#"<script>
+(function () {
+  var form = document.getElementById('note-form');
+  if (!form) return;
+  var key = form.getAttribute('data-draft-key');
+  if (!key) return;
+  var anchor = form.getAttribute('data-draft-anchor') || '';
+  var lsKey = 'ron-draft:' + key;
+  var FIELDS = ['title', 'tags', 'notebook', 'related', 'body'];
+  var msg = document.getElementById('draft-msg');
+  var btn = document.getElementById('save-draft-btn');
+
+  function say(text, isErr) {
+    if (msg) { msg.textContent = text; msg.style.color = isErr ? '#c33' : ''; }
+  }
+  function collect() {
+    var o = {};
+    FIELDS.forEach(function (f) { o[f] = form.elements[f].value; });
+    return o;
+  }
+  function apply(d) {
+    FIELDS.forEach(function (f) { if (typeof d[f] === 'string') form.elements[f].value = d[f]; });
+  }
+  function localIso() {
+    var d = new Date();
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+           'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+  // localStorage always (works offline); server best-effort (cross-device).
+  function persist(cb) {
+    var payload = collect();
+    try {
+      localStorage.setItem(lsKey, JSON.stringify(Object.assign({ savedAt: localIso() }, payload)));
+    } catch (e) {}
+    fetch('/drafts/' + encodeURIComponent(key), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(function (r) { if (cb) cb(r.ok); }).catch(function () { if (cb) cb(false); });
+  }
+
+  // Recover an unsaved local copy when it's newer than the server-side state.
+  try {
+    var raw = localStorage.getItem(lsKey);
+    if (raw) {
+      var d = JSON.parse(raw);
+      if (!anchor || !d.savedAt || String(d.savedAt) > anchor) {
+        apply(d);
+        say('recovered unsaved draft from ' + (d.savedAt || 'earlier'));
+      } else {
+        localStorage.removeItem(lsKey);
+      }
+    }
+  } catch (e) { /* corrupt entry: ignore */ }
+
+  var t;
+  form.addEventListener('input', function () {
+    if (btn) btn.textContent = 'save draft';
+    say('');
+    clearTimeout(t);
+    t = setTimeout(persist, 800);
+  });
+
+  if (btn) btn.addEventListener('click', function () {
+    persist(function (ok) { btn.textContent = ok ? 'saved ✓' : 'offline — kept locally'; });
+  });
+
+  // Submit via fetch so a network failure keeps the filled-in form (the
+  // text stays on screen and is cached) instead of an error page.
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    fetch(form.action, { method: 'POST', body: new FormData(form) })
+      .then(function (resp) {
+        if (resp.ok) {
+          try { localStorage.removeItem(lsKey); } catch (err) {}
+          window.location.href = resp.url || '/';
+        } else {
+          say('could not save (HTTP ' + resp.status + ') — your text is kept here and cached; try again later', true);
+          persist();
+        }
+      })
+      .catch(function () {
+        say('could not reach the server — your text is kept here and cached; try again later', true);
+        persist();
+      });
+  });
+})();
+</script>"#;
+
 async fn note_new_get(State(state): State<AppState>) -> ApiResult<Html<String>> {
-    let form = note_form_html(
-        "/notes/new",
-        "",
-        "",
-        &state.inner.default_notebook,
-        "",
-        "",
-        "create",
+    let (draft, watermark) = {
+        let conn = state.db();
+        (db::get_draft(&conn, "new")?, db::watermark_for(&conn, "new")?)
+    };
+    let anchor = draft_anchor(draft.as_ref(), watermark);
+    let (title, tags, notebook, related, body) = match &draft {
+        Some(d) => (
+            d.content.title.clone(),
+            d.content.tags.join("; "),
+            d.content.notebook.clone(),
+            d.content.related.join("; "),
+            d.content.body.clone(),
+        ),
+        None => (
+            String::new(),
+            String::new(),
+            state.inner.default_notebook.clone(),
+            String::new(),
+            String::new(),
+        ),
+    };
+    let mut html = format!(
+        "<h1>New note</h1>\n{}",
+        note_form_html("/notes/new", &title, &tags, &notebook, &related, &body, "create", "new", &anchor),
     );
-    let body = format!("<h1>New note</h1>\n{form}");
-    Ok(Html(page("new note", &body)))
+    if let Some(d) = draft {
+        html.push('\n');
+        html.push_str(&draft_banner(
+            "new",
+            &d.updated.format("%Y-%m-%d %H:%M").to_string(),
+            "/notes/new",
+            None,
+        ));
+    }
+    Ok(Html(page("new note", &html)))
 }
 
 async fn note_new_post(
@@ -278,24 +449,57 @@ async fn note_edit_get(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
-    let note = {
+    let (note, draft) = {
         let conn = state.db();
-        db::get_note(&conn, &id)?.ok_or(ApiError::NotFound)?
+        let note = db::get_note(&conn, &id)?.ok_or(ApiError::NotFound)?;
+        let draft = fresher_draft(db::get_draft(&conn, &format!("note:{id}"))?, note.updated);
+        (note, draft)
+    };
+    let anchor = match &draft {
+        Some(d) => d.updated.format("%Y-%m-%dT%H:%M:%S").to_string(),
+        None => note.updated.format("%Y-%m-%dT%H:%M:%S").to_string(),
+    };
+    let (title, tags, notebook, related, body) = match &draft {
+        Some(d) => (
+            d.content.title.clone(),
+            d.content.tags.join("; "),
+            d.content.notebook.clone(),
+            d.content.related.join("; "),
+            d.content.body.clone(),
+        ),
+        None => (
+            note.title.clone(),
+            note.tags.join("; "),
+            note.notebook.clone(),
+            note.related.join("; "),
+            note.body.clone(),
+        ),
     };
     let form = note_form_html(
         &format!("/notes/{id}/edit"),
-        &note.title,
-        &note.tags.join("; "),
-        &note.notebook,
-        &note.related.join("; "),
-        &note.body,
+        &title,
+        &tags,
+        &notebook,
+        &related,
+        &body,
         "save",
+        &format!("note:{id}"),
+        &anchor,
     );
-    let body = format!(
+    let mut html = format!(
         "<h1>Edit note</h1>\n<div class=\"meta\">id <code>{id}</code></div>\n{form}",
         id = html_escape::encode_text(&note.id),
     );
-    Ok(Html(page("edit note", &body)).into_response())
+    if let Some(d) = draft {
+        html.push('\n');
+        html.push_str(&draft_banner(
+            &format!("note:{id}"),
+            &d.updated.format("%Y-%m-%d %H:%M").to_string(),
+            &format!("/notes/{id}/edit"),
+            None,
+        ));
+    }
+    Ok(Html(page("edit note", &html)).into_response())
 }
 
 async fn note_edit_post(
@@ -1012,4 +1216,66 @@ pub fn routes() -> axum::Router<AppState> {
         .route("/login", get(login_get).post(login_post))
         .route("/resources/:name", get(resource_file))
         .route("/favicon.png", get(favicon))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::DraftContent;
+
+    fn draft(key: &str, updated: &str) -> Draft {
+        Draft {
+            key: key.to_string(),
+            content: DraftContent {
+                title: "t".into(),
+                ..Default::default()
+            },
+            updated: updated.parse().unwrap(),
+        }
+    }
+
+    #[test]
+    fn fresher_draft_only_when_newer_than_note() {
+        let note_updated: chrono::NaiveDateTime = "2026-08-16T12:00:00".parse().unwrap();
+        // Draft older than the note's last save: the note already has it.
+        assert!(fresher_draft(Some(draft("note:x", "2026-08-16T11:00:00")), note_updated).is_none());
+        assert!(fresher_draft(None, note_updated).is_none());
+        // Draft saved after the note's last save: prefill.
+        let d = fresher_draft(Some(draft("note:x", "2026-08-16T13:00:00")), note_updated).unwrap();
+        assert_eq!(d.key, "note:x");
+    }
+
+    #[test]
+    fn draft_anchor_prefers_live_then_watermark() {
+        let wm: chrono::NaiveDateTime = "2026-08-16T10:00:00".parse().unwrap();
+        assert_eq!(draft_anchor(None, None), "");
+        assert_eq!(draft_anchor(None, Some(wm)), "2026-08-16T10:00:00");
+        // A live draft wins over the watermark.
+        assert_eq!(
+            draft_anchor(Some(&draft("new", "2026-08-16T11:30:00")), Some(wm)),
+            "2026-08-16T11:30:00"
+        );
+    }
+
+    #[test]
+    fn draft_form_carries_recovery_attributes() {
+        let html = note_form_html(
+            "/notes/new", "", "", "default", "", "hello", "create", "new", "2026-08-16T10:00:00",
+        );
+        assert!(html.contains("data-draft-key=\"new\""));
+        assert!(html.contains("data-draft-anchor=\"2026-08-16T10:00:00\""));
+        assert!(html.contains("id=\"save-draft-btn\""));
+        assert!(html.contains("localStorage"));
+        // key="" disables the JS entirely
+        let plain = note_form_html("/notes/new", "", "", "default", "", "", "create", "", "");
+        assert!(!plain.contains("localStorage"));
+    }
+
+    #[test]
+    fn draft_banner_discards_clear_local_cache() {
+        let html = draft_banner("new", "2026-08-16 14:32", "/", Some("/notes/new"));
+        assert!(html.contains("/drafts/new/discard"));
+        assert!(html.contains("ron-draft-new"));
+        assert!(html.contains("edit draft"));
+    }
 }
