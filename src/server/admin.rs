@@ -4,7 +4,7 @@
 
 use axum::extract::State;
 use axum::Json;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::git;
 use crate::server::error::ApiResult;
@@ -78,12 +78,35 @@ async fn import(State(state): State<AppState>) -> ApiResult<Json<ImportReport>> 
     Ok(Json(ImportReport { items: count }))
 }
 
-/// `git push origin master`. The remote must already be configured (via
-/// `git -C <repo> remote add origin <url>`).
-async fn backup(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+#[derive(Deserialize, Default)]
+struct BackupBody {
+    #[serde(default)]
+    dry_run: bool,
+}
+
+/// `git push origin master`. With `dry_run`, only gather and report the
+/// status (remote, fetch, ahead/behind, commits to push/pull) — no push.
+/// The remote must already be configured (via `git -C <repo> remote add
+/// origin <url>`).
+async fn backup(
+    State(state): State<AppState>,
+    Json(body): Json<BackupBody>,
+) -> ApiResult<Json<BackupReport>> {
     let repo = state.inner.paths.repo_dir.clone();
+    if body.dry_run {
+        let status = git::backup_status(&repo, REMOTE, BRANCH)?;
+        return Ok(Json(BackupReport {
+            dry_run: true,
+            pushed: false,
+            status: Some(status),
+        }));
+    }
     git::push(&repo, REMOTE, BRANCH)?;
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(Json(BackupReport {
+        dry_run: false,
+        pushed: true,
+        status: None,
+    }))
 }
 
 /// `git pull --ff-only origin master`, then rebuild the DB from the YAML
@@ -129,6 +152,14 @@ pub struct ExportReport {
 #[derive(Serialize)]
 pub struct ImportReport {
     pub items: usize,
+}
+
+#[derive(Serialize)]
+pub struct BackupReport {
+    pub dry_run: bool,
+    pub pushed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<git::BackupStatus>,
 }
 
 #[derive(Serialize)]

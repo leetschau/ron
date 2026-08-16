@@ -213,6 +213,15 @@ ron backup     # git push origin master
 ron sync       # git pull --ff-only, then rebuild the DB
 ```
 
+`ron backup --dry-run` reports the sync state instead of pushing: the
+remote URL, whether a `git fetch` reached it (counts may be stale when
+offline), ahead/behind commits, and a hint — `ron backup` to push, `ron
+sync` to pull, `up to date` when neither. If local and remote have
+diverged (where `ron sync`'s `--ff-only` pull would fail), it prints the
+manual recovery steps: `git pull --rebase origin master`, resolve the
+YAML conflicts, then `ron import` to rebuild the DB and `ron backup` to
+push the reconciled history.
+
 ### Migrate from 1.x
 
 ```

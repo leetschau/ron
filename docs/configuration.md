@@ -189,6 +189,11 @@ git -C ~/.local/share/ron/repo remote add origin <url>
 
 Remote name defaults to `origin`, branch to `master` (`src/server/admin.rs`).
 
+`ron backup --dry-run` (`POST /api/backup` with `{"dry_run": true}`) fetches
+the remote and reports ahead/behind, the commits to push/pull, and a dirty
+tree — no push. The CLI renders it with a hint (`ron backup` / `ron sync`,
+or the manual rebase + `ron import` recovery when the histories diverged).
+
 ### `repo/resources/` — note attachments
 
 Image files (and any other attachments) referenced from note bodies as

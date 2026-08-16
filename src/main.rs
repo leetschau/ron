@@ -68,7 +68,9 @@ fn main() -> Result<()> {
         Some(("medit", sub)) => metrics_cmd::edit(sub),
         Some(("export", _)) => admin_cmd::export(),
         Some(("import", _)) => admin_cmd::import(),
-        Some(("backup", _)) => admin_cmd::backup(),
+        Some(("backup", sub)) => {
+            admin_cmd::backup(*sub.get_one::<bool>("dry-run").unwrap_or(&false))
+        }
         Some(("sync", _)) => admin_cmd::sync(),
         Some(("viewer-key", _)) => admin_cmd::viewer_key(),
         _ => unreachable!("subcommand_required prevents None"),
@@ -287,7 +289,14 @@ fn parse_args() -> clap::ArgMatches {
             Command::new("import").about("reload the DB from the YAML files on disk"),
         )
         .subcommand(
-            Command::new("backup").about("git push origin master (the repo must have a remote)"),
+            Command::new("backup")
+                .about("git push origin master (the repo must have a remote)")
+                .arg(
+                    Arg::new("dry-run")
+                        .long("dry-run")
+                        .action(ArgAction::SetTrue)
+                        .help("show ahead/behind vs origin and hints; don't push"),
+                ),
         )
         .subcommand(
             Command::new("sync")
@@ -1275,10 +1284,66 @@ mod admin_cmd {
         Ok(())
     }
 
-    pub fn backup() -> Result<()> {
-        client::backup()?;
-        println!("pushed");
+    pub fn backup(dry_run: bool) -> Result<()> {
+        let r = client::backup(dry_run)?;
+        if let Some(st) = &r.status {
+            print_backup_status(st);
+        } else {
+            println!("pushed");
+        }
         Ok(())
+    }
+
+    /// Human rendering of the `--dry-run` status report, with hints on
+    /// what to do next (backup / sync / manual divergence recovery).
+    fn print_backup_status(st: &client::BackupStatus) {
+        let Some(url) = &st.remote_url else {
+            println!("no remote configured; add one to enable backup/sync:");
+            println!("  git -C ~/.local/share/ron/repo remote add origin <url>");
+            return;
+        };
+        println!("remote: {url} (origin/master)");
+        if st.fetched {
+            println!("fetch: ok");
+        } else {
+            println!("fetch: failed (counts may be stale)");
+        }
+        if st.dirty {
+            println!("warning: working tree dirty; run `ron export` to commit the whole tree");
+        }
+        println!(
+            "ahead {}, behind {}",
+            st.ahead, st.behind
+        );
+        if !st.to_push.is_empty() {
+            println!("to push:");
+            for c in &st.to_push {
+                println!("  {} {}", c.hash, c.subject);
+            }
+        }
+        if !st.to_pull.is_empty() {
+            println!("to pull:");
+            for c in &st.to_pull {
+                println!("  {} {}", c.hash, c.subject);
+            }
+        }
+        if st.ahead > 0 && st.behind > 0 {
+            println!(
+                "warning: local and origin/master have diverged (ahead {}, behind {})",
+                st.ahead, st.behind
+            );
+            println!("  `ron sync` will fail (--ff-only); resolve manually, then reload:");
+            println!("    1. git -C ~/.local/share/ron/repo pull --rebase origin master");
+            println!("       (resolve YAML conflicts: git add <file> && git rebase --continue)");
+            println!("    2. ron import     # rebuild SQLite from the reconciled YAML");
+            println!("    3. ron backup     # push the reconciled history");
+        } else if st.behind > 0 {
+            println!("hint: run `ron sync` to pull");
+        } else if st.ahead > 0 {
+            println!("hint: run `ron backup` to push");
+        } else {
+            println!("up to date");
+        }
     }
 
     pub fn sync() -> Result<()> {
