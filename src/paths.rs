@@ -8,6 +8,7 @@
 //!     notes/note-*.yaml
 //!     pulses/pulse-*.yaml
 //!     metrics/metric-*.yaml
+//!     resources/             <- note attachments (`resources/<name>` refs)
 //! ~/.config/ron/
 //!   server.json              <- listen address, optional viewer gate, and
 //!                              the `url` CLI clients dial as a fallback

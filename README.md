@@ -19,6 +19,53 @@ reach it. Data lives under `~/.local/share/ron/` (SQLite + git repo of YAML);
 tokens under `~/.config/ron/`. See [docs/configuration.md](docs/configuration.md)
 for a complete reference of every config and data file.
 
+To stop a foreground server, press Ctrl-C (or `kill <pid>`): every write is
+committed to SQLite and the git repo as it happens, so shutdown needs no
+flush and is safe at any time. Restart to pick up edits to `server.json`.
+
+To keep the server running across reboots and crashes, run it as a systemd
+user service (next section).
+
+### Manage with systemd
+
+Everything ron touches lives under your home (`~/.config/ron`,
+`~/.local/share/ron`) and 7780 is an unprivileged port, so a **user** service
+needs no root. Create `~/.config/systemd/user/ron.service`:
+
+```ini
+[Unit]
+Description=ron notes server
+
+[Service]
+ExecStart=%h/.local/bin/ron serve
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+Adjust `ExecStart` if your binary lives elsewhere (`~/.cargo/bin/ron` after a
+plain `cargo install --path .`). Then:
+
+```
+systemctl --user daemon-reload
+systemctl --user enable --now ron
+systemctl --user status ron
+journalctl --user -u ron -f      # logs; ron prints "ron listening on ..."
+```
+
+Start at boot without anyone logged in (user services otherwise start at
+first login):
+
+```
+loginctl enable-linger $USER     # prefix with sudo on most distros
+```
+
+`systemctl --user stop ron` (or `reboot`) stops it safely — same as Ctrl-C on
+a foreground server. If `ron backup`/`sync` push over SSH, the service must
+be able to use your key: either an unencrypted `~/.ssh` key or an agent in
+the user session.
+
 ### Phone / browser access
 
 Open `http://<server-lan-ip>:7780/` in a browser. The viewer lets you read
@@ -78,8 +125,10 @@ ron relate          <id> <to...>   # add related note IDs to a note
 
 `list`/`search` print the note ID in its own column so you can pass it to
 `view`/`edit`/`delete`/`relate`. You can also pass a 1-based index from the
-last listing instead of an ID. From the browser, use the `+ new` link, and
-the edit/delete actions on each note.
+last listing instead of an ID; `view`/`edit`/`delete` default to `1` (most
+recent note). Short aliases: `a` add, `e` edit, `del` delete, `v` view,
+`l` list, `s` search, `lnb` list-notebook. From the browser, use the `+ new`
+link, and the edit/delete actions on each note.
 
 ### Pulses (recurring boolean trackers)
 
@@ -142,6 +191,10 @@ When a note's title contains a date that differs from its `Created:` field
 title's date. Options: `y` yes / `n` no / `a` yes-for-all / `s` skip-all /
 `q` quit.
 
+`ron migrate` converts note text only. Image files referenced as
+`resources/<name>` must be copied by hand — see
+[Images / attachments](#images--attachments) below.
+
 ### Browser
 
 Open `http://127.0.0.1:7780/` for the notes index, and `/view/<note-id>` to
@@ -149,17 +202,37 @@ read a rendered note (markdown + MathJax). `/search` offers incremental
 full-text search plus advanced filters (field, case, whole-word, updated-time
 range, order, limit).
 
+Images and other attachments referenced as `resources/<file>` in note bodies
+are served from `~/.local/share/ron/repo/resources/` at `/resources/<file>`
+(and ride along `backup`/`sync` with the git repo).
+
+### Images / attachments
+
+Note bodies may reference files as `resources/<name>` (the 1.x convention,
+e.g. `![image](resources/<hash>.png)`). The viewer rewrites those to the
+`/resources/<name>` route at render time, so they resolve on any page. Drop
+the files into the repo's resources dir (no restart needed — files are read
+per request):
+
+```
+mkdir -p ~/.local/share/ron/repo/resources
+cp <old-notes-dir>/resources/* ~/.local/share/ron/repo/resources/
+git -C ~/.local/share/ron/repo add -A
+git -C ~/.local/share/ron/repo commit -m "import image resources"
+```
+
+(`ron export` commits them too — it stages the whole tree.)
+
 ## Development
 
 ```
-cargo new --bin --name ron
-cd ron
-# add source files in src/ folder
-cargo run -- s key1 key2 ...
+cargo run -- serve    # run the server from source
 cargo test
-cargo build
 cargo build --release
 ```
+
+The Nix devshell (`flake.nix`) provides the toolchain; prefix commands with
+`nix develop --command ...` as in the musl build below.
 
 ### Static binary (portable across Linux hosts)
 
@@ -171,7 +244,7 @@ Linux binary, build for the musl target:
 
 ```
 # from the GitHub release (CI builds static musl binaries):
-#   https://github.com/<you>/ron/releases  ->  ron-x86_64-linux.tar.gz
+#   https://github.com/leetschau/ron/releases  ->  ron-x86_64-linux.tar.gz
 
 # or locally via the Nix devshell (flakes the musl toolchain):
 nix develop --command cargo build --release --target x86_64-unknown-linux-musl

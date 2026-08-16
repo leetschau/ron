@@ -704,6 +704,50 @@ async fn metrics_delete_post(
     Ok(Redirect::to("/metrics").into_response())
 }
 
+// ----- static resources (note attachments) ------------------------------------
+
+/// Serve a file from `<repo>/resources/` — where note attachments referenced
+/// as `resources/<name>` in note bodies live (e.g. images migrated from 1.x).
+/// Flat file names only: rejects anything with a path component. Reads the
+/// disk per request, so files dropped into the dir are served without a
+/// restart. Gated by `viewer_secret` like every other viewer route.
+async fn resource_file(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> ApiResult<Response> {
+    if name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || name.starts_with('.')
+    {
+        return Err(ApiError::NotFound);
+    }
+    let path = state.inner.paths.repo_dir.join("resources").join(&name);
+    let bytes = std::fs::read(&path).map_err(|_| ApiError::NotFound)?;
+    let mime = match name.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase()) {
+        Some(ext) => match ext.as_str() {
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "svg" => "image/svg+xml",
+            "bmp" => "image/bmp",
+            "ico" => "image/x-icon",
+            "avif" => "image/avif",
+            "txt" | "md" => "text/plain; charset=utf-8",
+            _ => "application/octet-stream",
+        },
+        None => "application/octet-stream",
+    };
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, axum::http::HeaderValue::from_str(mime)
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?)],
+        bytes,
+    )
+        .into_response())
+}
+
 // ----- login ----------------------------------------------------------------
 
 #[derive(Debug, serde::Deserialize)]
@@ -958,5 +1002,6 @@ pub fn routes() -> axum::Router<AppState> {
         .route("/metrics/:id/edit", get(metric_edit_get).post(metric_edit_post))
         .route("/metrics/:id/delete", post(metrics_delete_post))
         .route("/login", get(login_get).post(login_post))
+        .route("/resources/:name", get(resource_file))
         .route("/favicon.png", get(favicon))
 }

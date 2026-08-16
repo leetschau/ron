@@ -11,6 +11,7 @@ a complete reference; for the auth/security model behind the credentials see
 | `~/.config/ron/cli-token.json` | raw API secret this machine sends | JSON | `ron token grant` |
 | `~/.local/share/ron/db.sqlite3` | SQLite working store | binary | server, always |
 | `~/.local/share/ron/repo/` | git repo of YAML — source of truth | YAML + git | server, every write commits |
+| `~/.local/share/ron/repo/resources/` | note attachments referenced as `resources/<name>` | any (images) | user (manual copy / git) |
 | `~/.local/share/ron/repo/.gitignore` | keeps SQLite out of the repo | text | server (auto, once) |
 
 `~` is the user's home. On Linux, `directories::ProjectDirs` resolves these to
@@ -136,6 +137,19 @@ git -C ~/.local/share/ron/repo remote add origin <url>
 ```
 
 Remote name defaults to `origin`, branch to `master` (`src/server/admin.rs`).
+
+### `repo/resources/` — note attachments
+
+Image files (and any other attachments) referenced from note bodies as
+`resources/<name>` — the convention carried over from 1.x, e.g.
+`![image](resources/<hash>.png)`. The viewer serves them at
+`/resources/<name>` (rewriting the relative URL at render time, since on a
+`/view/<id>` page it would otherwise resolve to `/view/resources/<name>`).
+The route is part of the viewer: cookie-gated when `viewer_secret` is set,
+open otherwise; flat file names only. Files are read from disk per request,
+so dropping files in takes effect without a restart. Tracked by git like
+the YAML, so they ride `backup`/`sync`; commit new files by hand or via
+`ron export` (which stages the whole tree).
 
 ### `repo/.gitignore`
 
