@@ -59,6 +59,15 @@ first login):
 
 ```
 loginctl enable-linger $USER     # prefix with sudo on most distros
+                                 # no sudo needed on a NAS host
+```
+
+Check whether lingering is already enabled:
+
+```
+loginctl show-user $USER --property=Linger   # prints Linger=yes/no
+loginctl user-status $USER                   # header shows "Linger: yes"
+ls /var/lib/systemd/linger/                  # one file per linger-enabled user
 ```
 
 `systemctl --user stop ron` (or `reboot`) stops it safely — same as Ctrl-C on

@@ -370,9 +370,11 @@ const DRAFT_JS: &str = r#"<script>
 
   // Submit via fetch so a network failure keeps the filled-in form (the
   // text stays on screen and is cached) instead of an error page.
+  // URLSearchParams (not FormData): the server's form extractor rejects
+  // multipart bodies with HTTP 415, fetch encodes this as urlencoded.
   form.addEventListener('submit', function (e) {
     e.preventDefault();
-    fetch(form.action, { method: 'POST', body: new FormData(form) })
+    fetch(form.action, { method: 'POST', body: new URLSearchParams(new FormData(form)) })
       .then(function (resp) {
         if (resp.ok) {
           try { localStorage.removeItem(lsKey); } catch (err) {}
