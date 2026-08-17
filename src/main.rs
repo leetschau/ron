@@ -811,13 +811,20 @@ mod notes_cmd {
         }
     }
 
+    /// Paste-ready command that resumes this draft: the `ron draft list`
+    /// resume column and the recovery hints render it (backticked, via
+    /// `recover_hint`).
+    pub fn resume_command(key: &str) -> String {
+        if key == "new" {
+            "ron add".to_string()
+        } else {
+            format!("ron edit {}", key.strip_prefix("note:").unwrap_or(key))
+        }
+    }
+
     /// How to pick this draft back up, for user-facing hints.
     fn recover_hint(key: &str) -> String {
-        if key == "new" {
-            "`ron add`".to_string()
-        } else {
-            format!("`ron edit {}`", key.strip_prefix("note:").unwrap_or(key))
-        }
+        format!("`{}`", resume_command(key))
     }
 
     /// Shared tail of `add`/`edit`: classify the editor outcome and either
@@ -909,8 +916,10 @@ mod notes_cmd {
 
     /// A "target" is either an ID (contains `-`) or a 1-based index of the
     /// last `list`/`search` result. P3 only resolves indices via a fresh
-    /// `list_notes(50)` call; the old pickle cache is gone.
+    /// `list_notes(50)` call; the old pickle cache is gone. A draft key
+    /// (`note:<id>`, as printed by `ron draft list`) is accepted as its ID.
     fn resolve_target(target: &str) -> Result<String> {
+        let target = target.strip_prefix("note:").unwrap_or(target);
         if target.contains('-') {
             return Ok(target.to_string());
         }
@@ -948,7 +957,7 @@ mod notes_cmd {
         }
     }
 
-    fn truncate(s: &str, n: usize) -> String {
+    pub fn truncate(s: &str, n: usize) -> String {
         if s.chars().count() <= n {
             s.to_string()
         } else {
@@ -1004,6 +1013,22 @@ mod notes_cmd {
             let parsed = parse_editor_buffer(typed_no_title.text()).unwrap();
             assert!(parsed.title.trim().is_empty()); // would take the draft branch
             assert!(!typed_no_title.text().trim().is_empty());
+        }
+
+        #[test]
+        fn resolve_target_accepts_draft_key() {
+            // `ron draft list` prints keys like `note:<id>`; pasting one into
+            // edit/view/delete must resolve to the note ID, not 404.
+            assert_eq!(resolve_target("note:note-1").unwrap(), "note-1");
+            assert_eq!(resolve_target("note-1").unwrap(), "note-1");
+        }
+
+        #[test]
+        fn resume_command_matches_key_shape() {
+            assert_eq!(resume_command("new"), "ron add");
+            assert_eq!(resume_command("note:note-1"), "ron edit note-1");
+            // Recovery hints render the same command backticked.
+            assert_eq!(recover_hint("note:note-1"), "`ron edit note-1`");
         }
     }
 }
@@ -1064,7 +1089,10 @@ mod drafts_cmd {
             println!("(no drafts)");
             return Ok(());
         }
-        println!("{:<28}  {:<19}  {:<13}  {}", "key", "saved", "where", "title");
+        println!(
+            "{:<28}  {:<19}  {:<13}  {:<24}  {}",
+            "key", "saved", "where", "title", "resume"
+        );
         for k in &keys {
             let sd = server.iter().find(|d| &d.key == k);
             let ld = local.get(k);
@@ -1075,11 +1103,12 @@ mod drafts_cmd {
             };
             let whr = if sd.is_some() && ld.is_some() { "server+local" } else { whr };
             println!(
-                "{:<28}  {:<19}  {:<13}  {}",
+                "{:<28}  {:<19}  {:<13}  {:<24}  {}",
                 k,
                 ts.format("%Y-%m-%d %H:%M:%S"),
                 whr,
-                title,
+                notes_cmd::truncate(&title, 24),
+                notes_cmd::resume_command(k),
             );
         }
         Ok(())

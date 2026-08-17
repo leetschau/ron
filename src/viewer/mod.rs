@@ -330,6 +330,11 @@ const DRAFT_JS: &str = r#"<script>
            'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
   }
   // localStorage always (works offline); server best-effort (cross-device).
+  function splitList(s) {
+    return String(s == null ? '' : s).split(/[;,]/)
+      .map(function (t) { return t.trim(); })
+      .filter(function (t) { return t.length > 0; });
+  }
   function persist(cb) {
     var payload = collect();
     try {
@@ -338,8 +343,14 @@ const DRAFT_JS: &str = r#"<script>
     fetch('/drafts/' + encodeURIComponent(key), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    }).then(function (r) { if (cb) cb(r.ok); }).catch(function () { if (cb) cb(false); });
+      body: JSON.stringify({
+        title: payload.title,
+        tags: splitList(payload.tags),
+        notebook: payload.notebook,
+        related: splitList(payload.related),
+        body: payload.body,
+      }),
+    }).then(function (r) { if (cb) cb(r.ok && !r.redirected); }).catch(function () { if (cb) cb(false); });
   }
 
   // Recover an unsaved local copy when it's newer than the server-side state.
@@ -1271,6 +1282,16 @@ mod tests {
         // key="" disables the JS entirely
         let plain = note_form_html("/notes/new", "", "", "default", "", "", "create", "", "");
         assert!(!plain.contains("localStorage"));
+    }
+
+    #[test]
+    fn draft_js_sends_wire_shape_draft_content() {
+        // DraftContent.tags/.related are Vec<String> on the wire; raw form
+        // strings get rejected with HTTP 422 (the "offline — kept locally"
+        // bug). The JS must split before POSTing.
+        assert!(DRAFT_JS.contains("splitList(payload.tags)"));
+        assert!(DRAFT_JS.contains("splitList(payload.related)"));
+        assert!(!DRAFT_JS.contains("body: JSON.stringify(payload)"));
     }
 
     #[test]
