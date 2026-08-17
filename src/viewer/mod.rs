@@ -60,20 +60,33 @@ const PAGE_HEAD: &str = r#"<!doctype html>
     #search-form input[type=text],
     #search-form select { font: inherit; }
     #search-form label { white-space: nowrap; }
+    /* wider layout for the note edit pages (editor + preview split) */
+    body.wide { max-width: min(1200px, 94vw); }
+    #edit-split { display: flex; gap: 0.8rem; margin-top: 0.2rem; }
+    #edit-split .editor-col, #edit-split .preview-col {
+      flex: 1 1 50%; min-width: 0; }
+    #note-body { box-sizing: border-box; height: 34em; }
+    #preview { box-sizing: border-box; height: 34em; overflow: auto;
+               border: 1px dashed rgba(127,127,127,0.4);
+               border-radius: 4px; padding: 0.2em 0.6em; }
+    #edit-split.no-preview .preview-col { display: none; }
+    #edit-split.no-preview .editor-col { flex: 1 1 100%; }
+    @media (max-width: 900px) {
+      #edit-split { flex-direction: column; }
+      #note-body, #preview { height: auto; min-height: 18em; }
+    }
   </style>
   <script>
     MathJax = { tex: { inlineMath: [['$', '$'], ['\\(', '\\)']],
                        displayMath: [['$$','$$'], ['\\[','\\]']] } };
   </script>
   <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
-</head>
-<body>
-"#;
+</head>"#;
 const PAGE_FOOT: &str = "\n</body>\n</html>\n";
 
-fn page(title: &str, body: &str) -> String {
+fn layout(title: &str, body_attrs: &str, body: &str) -> String {
     format!(
-        "{PAGE_HEAD}<!-- {title} -->\n<nav>\
+        "{PAGE_HEAD}\n<body{body_attrs}><!-- {title} -->\n<nav>\
          <a href=\"/\">notes</a>\
          <a href=\"/notes/new\">+ new</a>\
          <a href=\"/pulses\">pulses</a>\
@@ -82,6 +95,16 @@ fn page(title: &str, body: &str) -> String {
          <input name=\"q\" placeholder=\"search…\" aria-label=\"search notes\">\
          </form></nav>\n{body}{PAGE_FOOT}"
     )
+}
+
+fn page(title: &str, body: &str) -> String {
+    layout(title, "", body)
+}
+
+/// Wider variant of [`page`] for pages that need the extra horizontal room
+/// (note edit forms with the side-by-side preview panel).
+fn page_wide(title: &str, body: &str) -> String {
+    layout(title, " class=\"wide\"", body)
 }
 
 async fn index(State(state): State<AppState>) -> ApiResult<Html<String>> {
@@ -226,6 +249,8 @@ fn split_semi(s: &str) -> Vec<String> {
 /// Render the shared note form. `action` is the POST target; submit_label is
 /// the button text ("create" or "save"). `draft_key`/`draft_anchor` wire up
 /// the draft autosave + recovery JS (see DRAFT_JS); an empty key disables it.
+/// The body textarea sits beside a live markdown preview panel (PREVIEW_JS),
+/// renderable on the server via `POST /notes/preview`.
 #[allow(clippy::too_many_arguments)]
 fn note_form_html(
     action: &str,
@@ -244,9 +269,13 @@ fn note_form_html(
   <label>tags<br><input name="tags" value="{tags}" placeholder="semicolon-separated" style="width:100%;padding:0.3em"></label><br>
   <label>notebook<br><input name="notebook" value="{notebook}" style="width:100%;padding:0.3em"></label><br>
   <label>related<br><input name="related" value="{related}" placeholder="related note IDs, semicolon-separated" style="width:100%;padding:0.3em"></label><br>
-  body<br><textarea name="body" rows="22" style="width:100%;font-family:monospace;padding:0.3em">{body}</textarea><br>
+  <div id="edit-split">
+    <div class="editor-col">body<br><textarea id="note-body" name="body" rows="22" style="width:100%;font-family:monospace;padding:0.3em">{body}</textarea></div>
+    <div class="preview-col"><span class="meta">preview</span><br><div id="preview"></div></div>
+  </div>
   <button type="submit" style="padding:0.3em 0.8em;margin-top:0.4em">{submit_label}</button>
   <button type="button" id="save-draft-btn" style="padding:0.3em 0.8em;margin-top:0.4em">save draft</button>
+  <button type="button" id="preview-btn" style="padding:0.3em 0.8em;margin-top:0.4em">hide preview</button>
   <div id="draft-msg" class="meta" style="margin-top:0.4em"></div>
 </form>
 {js}"#,
@@ -259,7 +288,7 @@ fn note_form_html(
         submit_label = submit_label,
         draft_key = html_escape::encode_double_quoted_attribute(draft_key),
         draft_anchor = html_escape::encode_double_quoted_attribute(draft_anchor),
-        js = if draft_key.is_empty() { String::new() } else { DRAFT_JS.to_string() },
+        js = format!("{}{}", if draft_key.is_empty() { String::new() } else { DRAFT_JS.to_string() }, PREVIEW_JS),
     )
 }
 
@@ -322,6 +351,10 @@ const DRAFT_JS: &str = r#"<script>
   }
   function apply(d) {
     FIELDS.forEach(function (f) { if (typeof d[f] === 'string') form.elements[f].value = d[f]; });
+    // Let the preview panel (PREVIEW_JS) pick up the recovered body; a plain
+    // 'input' event would retrigger this script's own autosave listener.
+    var body = form.elements['body'];
+    if (body && body.dispatchEvent) body.dispatchEvent(new Event('ron-draft-applied'));
   }
   function localIso() {
     var d = new Date();
@@ -403,6 +436,59 @@ const DRAFT_JS: &str = r#"<script>
 })();
 </script>"#;
 
+/// Live markdown preview beside the edit textarea: debounced `POST
+/// /notes/preview` (server renders with the same pipeline as `/view/:id`)
+/// injected into `#preview`. The "hide preview" button toggles the panel and
+/// remembers the choice in localStorage. MathJax is re-typeset per update
+/// (guarded: it loads async from a CDN and may be unavailable offline).
+const PREVIEW_JS: &str = r#"<script>
+(function () {
+  var split = document.getElementById('edit-split');
+  var ta = document.getElementById('note-body');
+  var prev = document.getElementById('preview');
+  var btn = document.getElementById('preview-btn');
+  if (!split || !ta || !prev) return;
+  var HIDDEN = 'ron-preview-hidden';
+  var seq = 0;
+  var t;
+  function hidden() { return split.className.indexOf('no-preview') !== -1; }
+  function typeset() {
+    if (window.MathJax && MathJax.startup && MathJax.typesetPromise) {
+      MathJax.startup.promise
+        .then(function () { return MathJax.typesetPromise([prev]); })
+        .catch(function () {});
+    }
+  }
+  function render() {
+    var id = ++seq;
+    fetch('/notes/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: ta.value,
+    }).then(function (r) { if (!r.ok) throw 0; return r.text(); })
+      .then(function (h) {
+        if (id !== seq || hidden()) return; // stale response / panel hidden
+        prev.innerHTML = h;
+        typeset();
+      }).catch(function () {});
+  }
+  function schedule() { clearTimeout(t); t = setTimeout(render, 300); }
+  ta.addEventListener('input', schedule);
+  // draft recovery (DRAFT_JS) refills the textarea programmatically
+  ta.addEventListener('ron-draft-applied', render);
+  function applyHidden(h) {
+    split.className = h ? 'no-preview' : '';
+    if (btn) btn.textContent = h ? 'show preview' : 'hide preview';
+    try { localStorage.setItem(HIDDEN, h ? '1' : '0'); } catch (e) {}
+    if (!h) render();
+  }
+  if (btn) btn.addEventListener('click', function () { applyHidden(!hidden()); });
+  var stored = null;
+  try { stored = localStorage.getItem(HIDDEN); } catch (e) {}
+  if (stored === '1') applyHidden(true); else render();
+})();
+</script>"#;
+
 async fn note_new_get(State(state): State<AppState>) -> ApiResult<Html<String>> {
     let (draft, watermark) = {
         let conn = state.db();
@@ -438,7 +524,14 @@ async fn note_new_get(State(state): State<AppState>) -> ApiResult<Html<String>> 
             None,
         ));
     }
-    Ok(Html(page("new note", &html)))
+    Ok(Html(page_wide("new note", &html)))
+}
+
+/// `POST /notes/preview` — body is raw markdown (text/plain), response is the
+/// rendered HTML fragment for the edit form's preview panel. Same renderer
+/// as `/view/:id`, so the preview matches the final page exactly.
+async fn note_preview(body: String) -> Html<String> {
+    Html(render::markdown_to_html(&body))
 }
 
 async fn note_new_post(
@@ -512,7 +605,7 @@ async fn note_edit_get(
             None,
         ));
     }
-    Ok(Html(page("edit note", &html)).into_response())
+    Ok(Html(page_wide("edit note", &html)).into_response())
 }
 
 async fn note_edit_post(
@@ -1214,6 +1307,7 @@ pub fn routes() -> axum::Router<AppState> {
         .route("/view/:id", get(view_note))
         .route("/search", get(search_page))
         .route("/notes/new", get(note_new_get).post(note_new_post))
+        .route("/notes/preview", post(note_preview))
         .route("/notes/:id/edit", get(note_edit_get).post(note_edit_post))
         .route("/notes/:id/delete", post(note_delete_post))
         .route("/pulses", get(pulses_index).post(pulses_new_post))
@@ -1279,9 +1373,39 @@ mod tests {
         assert!(html.contains("data-draft-anchor=\"2026-08-16T10:00:00\""));
         assert!(html.contains("id=\"save-draft-btn\""));
         assert!(html.contains("localStorage"));
-        // key="" disables the JS entirely
+        // key="" disables the draft JS entirely (the always-on PREVIEW_JS
+        // below also touches localStorage, so target a DRAFT_JS-only string)
         let plain = note_form_html("/notes/new", "", "", "default", "", "", "create", "", "");
-        assert!(!plain.contains("localStorage"));
+        assert!(!plain.contains("'/drafts/'"));
+    }
+
+    #[test]
+    fn note_form_has_preview_panel() {
+        // preview is wired up even when draft autosave is disabled (key="")
+        let plain = note_form_html("/notes/new", "", "", "default", "", "body text", "create", "", "");
+        assert!(plain.contains("id=\"edit-split\""));
+        assert!(plain.contains("id=\"note-body\""));
+        assert!(plain.contains("id=\"preview\""));
+        assert!(plain.contains("id=\"preview-btn\""));
+        assert!(plain.contains("/notes/preview"));
+        // draft recovery announces itself so the panel can re-render
+        assert!(DRAFT_JS.contains("ron-draft-applied"));
+        assert!(PREVIEW_JS.contains("ron-draft-applied"));
+    }
+
+    #[tokio::test]
+    async fn note_preview_returns_rendered_fragment() {
+        let Html(html) = note_preview("# Hi\n\nhello **world**\n\n$x^2$".to_string()).await;
+        assert!(html.contains("<h1>Hi</h1>"));
+        assert!(html.contains("<strong>world</strong>"));
+        // math survives for MathJax, matching the /view/:id pipeline
+        assert!(html.contains("$x^2$"));
+    }
+
+    #[test]
+    fn wide_pages_get_wider_layout() {
+        assert!(page_wide("t", "").contains("<body class=\"wide\">"));
+        assert!(!page("t", "").contains("class=\"wide\""));
     }
 
     #[test]
